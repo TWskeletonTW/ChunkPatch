@@ -1,0 +1,21 @@
+{
+  "category.chunkpatch": "區塊邊界填補",
+  "key.chunkpatch.open": "開啟區塊邊界填補器",
+  "chunkpatch.title": "區塊邊界填補器",
+  "chunkpatch.scan": "掃描世界",
+  "chunkpatch.estimate": "套用並估算",
+  "chunkpatch.start": "開始生成",
+  "chunkpatch.pause": "暫停",
+  "chunkpatch.resume": "繼續",
+  "chunkpatch.stop": "停止",
+  "chunkpatch.close": "關閉",
+  "chunkpatch.min_x": "西界 X",
+  "chunkpatch.max_x": "東界 X",
+  "chunkpatch.min_z": "北界 Z",
+  "chunkpatch.max_z": "南界 Z",
+  "chunkpatch.rate": "每 Tick 區塊數",
+  "chunkpatch.legend": "綠：已存在　黑：未生成　紅：異常　黃框：選取邊界",
+  "chunkpatch.no_world": "請先進入單人世界",
+  "chunkpatch.help": "K 開啟介面；拖曳黃框或直接輸入方塊座標",
+  "chunkpatch.command.help": "使用 /chunkfill scan|status|pause|resume|stop"
+}

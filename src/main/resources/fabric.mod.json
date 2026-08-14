@@ -1,0 +1,29 @@
+{
+	"schemaVersion": 1,
+	"id": "chunkpatch",
+	"version": "${version}",
+	"name": "ChunkPatch",
+	"description": "Scans saved chunks, previews editable boundaries and safely fills missing chunks in singleplayer worlds.",
+	"authors": [
+		"TWskeletonTW"
+	],
+	"contact": {
+		"sources": "https://github.com/TWskeletonTW/ChunkPatch"
+	},
+	"license": "CC0-1.0",
+	"environment": "client",
+	"entrypoints": {
+		"main": [
+			"tw.skeleton.chunkpatch.ChunkPatchMod"
+		],
+		"client": [
+			"tw.skeleton.chunkpatch.client.ChunkPatchClient"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": "~1.19.4",
+		"java": ">=17",
+		"fabric-api": "*"
+	}
+}

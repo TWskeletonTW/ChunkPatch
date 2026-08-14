@@ -1,0 +1,21 @@
+{
+  "category.chunkpatch": "ChunkPatch",
+  "key.chunkpatch.open": "Open ChunkPatch",
+  "chunkpatch.title": "ChunkPatch",
+  "chunkpatch.scan": "Scan World",
+  "chunkpatch.estimate": "Apply & Estimate",
+  "chunkpatch.start": "Start Generation",
+  "chunkpatch.pause": "Pause",
+  "chunkpatch.resume": "Resume",
+  "chunkpatch.stop": "Stop",
+  "chunkpatch.close": "Close",
+  "chunkpatch.min_x": "West X",
+  "chunkpatch.max_x": "East X",
+  "chunkpatch.min_z": "North Z",
+  "chunkpatch.max_z": "South Z",
+  "chunkpatch.rate": "Chunks per Tick",
+  "chunkpatch.legend": "Green: saved  Black: missing  Red: invalid  Yellow: selection",
+  "chunkpatch.no_world": "Enter a singleplayer world first",
+  "chunkpatch.help": "Press K to open; drag the yellow boundary or enter block coordinates",
+  "chunkpatch.command.help": "Use /chunkfill scan|status|pause|resume|stop"
+}
