@@ -32,9 +32,13 @@ final class XaeroMapCoverageScanner {
 	static CoverageStats apply(
 		Path dimensionPath,
 		String dimensionId,
+		LongOpenHashSet full,
+		LongOpenHashSet renderable,
 		LongOpenHashSet partial,
-		LongOpenHashSet renderable
+		LongOpenHashSet corrupt,
+		ChunkBounds bounds
 	) {
+		if (bounds == null) return CoverageStats.EMPTY;
 		Path dimensionFolder = findDimensionFolder(dimensionPath, dimensionId);
 		if (dimensionFolder == null || !Files.isDirectory(dimensionFolder)) return CoverageStats.EMPTY;
 
@@ -49,18 +53,22 @@ final class XaeroMapCoverageScanner {
 		} catch (IOException exception) {
 			ChunkPatchMod.LOGGER.warn("Unable to list Xaero map folders in {} ({})", dimensionFolder, exception.getMessage());
 		}
-		return applyFromCacheDirectories(cacheDirectories, partial, renderable);
+		return applyFromCacheDirectories(cacheDirectories, full, renderable, partial, corrupt, bounds);
 	}
 
 	static CoverageStats applyFromCacheDirectories(
 		List<Path> cacheDirectories,
+		LongOpenHashSet full,
+		LongOpenHashSet renderable,
 		LongOpenHashSet partial,
-		LongOpenHashSet renderable
+		LongOpenHashSet corrupt,
+		ChunkBounds bounds
 	) {
 		int files = 0;
 		int unreadable = 0;
 		long leaves = 0L;
 		long promoted = 0L;
+		long addedUnstored = 0L;
 		Path firstUnreadable = null;
 		String firstUnreadableReason = null;
 
@@ -75,7 +83,18 @@ final class XaeroMapCoverageScanner {
 						int regionZ = Integer.parseInt(matcher.group(2));
 						LeafMask mask = readLeafMask(cacheFile);
 						leaves += mask.count();
-						promoted += promotePartialChunks(regionX, regionZ, mask.bits(), partial, renderable);
+						Promotion promotion = applyLeafCoverage(
+							regionX,
+							regionZ,
+							mask.bits(),
+							full,
+							renderable,
+							partial,
+							corrupt,
+							bounds
+						);
+						promoted += promotion.partialChunks();
+						addedUnstored += promotion.unstoredChunks();
 					} catch (IOException | RuntimeException exception) {
 						unreadable++;
 						if (firstUnreadable == null) {
@@ -95,10 +114,11 @@ final class XaeroMapCoverageScanner {
 
 		if (files > 0) {
 			ChunkPatchMod.LOGGER.info(
-				"Xaero map coverage: {} cache files, {} populated 4x4 leaves, {} partial chunks already drawable",
+				"Xaero map coverage: {} cache files, {} populated 4x4 leaves, {} partial and {} unstored chunks already drawable",
 				files,
 				leaves,
-				promoted
+				promoted,
+				addedUnstored
 			);
 		}
 		if (unreadable > 0) {
@@ -109,7 +129,7 @@ final class XaeroMapCoverageScanner {
 				firstUnreadableReason == null ? "unknown error" : firstUnreadableReason
 			);
 		}
-		return new CoverageStats(files, unreadable, leaves, promoted);
+		return new CoverageStats(files, unreadable, leaves, promoted, addedUnstored);
 	}
 
 	private static Path findDimensionFolder(Path dimensionPath, String dimensionId) {
@@ -197,14 +217,18 @@ final class XaeroMapCoverageScanner {
 		}
 	}
 
-	private static long promotePartialChunks(
+	private static Promotion applyLeafCoverage(
 		int regionX,
 		int regionZ,
 		long leafBits,
+		LongOpenHashSet full,
+		LongOpenHashSet renderable,
 		LongOpenHashSet partial,
-		LongOpenHashSet renderable
+		LongOpenHashSet corrupt,
+		ChunkBounds bounds
 	) {
 		long promoted = 0L;
+		long addedUnstored = 0L;
 		for (int leafZ = 0; leafZ < LEAVES_PER_AXIS; leafZ++) {
 			for (int leafX = 0; leafX < LEAVES_PER_AXIS; leafX++) {
 				long bit = 1L << (leafZ * LEAVES_PER_AXIS + leafX);
@@ -213,20 +237,35 @@ final class XaeroMapCoverageScanner {
 				int baseZ = regionZ * XAERO_REGION_CHUNKS + leafZ * LEAF_CHUNKS;
 				for (int dz = 0; dz < LEAF_CHUNKS; dz++) {
 					for (int dx = 0; dx < LEAF_CHUNKS; dx++) {
-						long packed = ChunkPos.asLong(baseX + dx, baseZ + dz);
+						int chunkX = baseX + dx;
+						int chunkZ = baseZ + dz;
+						if (!bounds.contains(chunkX, chunkZ)) continue;
+						long packed = ChunkPos.asLong(chunkX, chunkZ);
+						if (corrupt.contains(packed) || full.contains(packed) || renderable.contains(packed)) continue;
 						if (partial.remove(packed)) {
-							renderable.add(packed);
 							promoted++;
+						} else {
+							addedUnstored++;
 						}
+						renderable.add(packed);
 					}
 				}
 			}
 		}
-		return promoted;
+		return new Promotion(promoted, addedUnstored);
 	}
 
-	record CoverageStats(int cacheFiles, int unreadableFiles, long populatedLeaves, long promotedChunks) {
-		private static final CoverageStats EMPTY = new CoverageStats(0, 0, 0L, 0L);
+	record CoverageStats(
+		int cacheFiles,
+		int unreadableFiles,
+		long populatedLeaves,
+		long promotedPartialChunks,
+		long addedUnstoredChunks
+	) {
+		private static final CoverageStats EMPTY = new CoverageStats(0, 0, 0L, 0L, 0L);
+	}
+
+	private record Promotion(long partialChunks, long unstoredChunks) {
 	}
 
 	private record LeafMask(long bits, int count) {

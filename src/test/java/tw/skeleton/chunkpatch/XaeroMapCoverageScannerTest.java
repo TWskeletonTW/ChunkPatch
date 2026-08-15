@@ -22,33 +22,49 @@ class XaeroMapCoverageScannerTest {
 	Path temporary;
 
 	@Test
-	void promotesOnlyPartialChunksCoveredByPopulatedXaeroLeaves() throws Exception {
+	void marksStoredAndUnstoredChunksCoveredByPopulatedXaeroLeaves() throws Exception {
 		Path cacheDirectory = Files.createDirectories(temporary.resolve("cache_1"));
 		writeCache(cacheDirectory.resolve("-2_5.xwmc"), (2 << 4) | 3);
 
+		LongOpenHashSet full = new LongOpenHashSet();
 		LongOpenHashSet partial = new LongOpenHashSet();
 		LongOpenHashSet renderable = new LongOpenHashSet();
+		LongOpenHashSet corrupt = new LongOpenHashSet();
 		for (int z = 172; z <= 175; z++) {
 			for (int x = -56; x <= -53; x++) partial.add(ChunkPos.asLong(x, z));
 		}
+		long alreadyFull = ChunkPos.asLong(-56, 172);
+		long invalid = ChunkPos.asLong(-55, 172);
+		long unstored = ChunkPos.asLong(-54, 172);
+		partial.remove(alreadyFull);
+		partial.remove(invalid);
+		partial.remove(unstored);
+		full.add(alreadyFull);
+		corrupt.add(invalid);
 		long outside = ChunkPos.asLong(-52, 172);
 		partial.add(outside);
 
 		XaeroMapCoverageScanner.CoverageStats stats = XaeroMapCoverageScanner.applyFromCacheDirectories(
 			List.of(cacheDirectory),
+			full,
+			renderable,
 			partial,
-			renderable
+			corrupt,
+			new ChunkBounds(-60, -50, 170, 180)
 		);
 
 		assertEquals(1, stats.cacheFiles());
 		assertEquals(0, stats.unreadableFiles());
 		assertEquals(1L, stats.populatedLeaves());
-		assertEquals(16L, stats.promotedChunks());
+		assertEquals(13L, stats.promotedPartialChunks());
+		assertEquals(1L, stats.addedUnstoredChunks());
 		assertEquals(1L, partial.size());
 		assertTrue(partial.contains(outside));
-		assertEquals(16L, renderable.size());
-		assertTrue(renderable.contains(ChunkPos.asLong(-56, 172)));
+		assertEquals(14L, renderable.size());
+		assertTrue(renderable.contains(unstored));
 		assertTrue(renderable.contains(ChunkPos.asLong(-53, 175)));
+		assertFalse(renderable.contains(alreadyFull));
+		assertFalse(renderable.contains(invalid));
 		assertFalse(renderable.contains(outside));
 	}
 

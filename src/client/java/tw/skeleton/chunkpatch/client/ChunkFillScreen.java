@@ -275,8 +275,9 @@ public final class ChunkFillScreen extends Screen {
 			for (int px = 0; px < preview.width(); px++) {
 				int index = pz * preview.width() + px;
 				int density = preview.density(index);
+				int savedCount = preview.savedCounts()[index];
 				int partialCount = preview.partialCounts()[index];
-				if (density == 0 && partialCount == 0 && !preview.invalid()[index]) continue;
+				if (savedCount == 0 && partialCount == 0 && !preview.invalid()[index]) continue;
 				double chunkX0 = detected.minX() + px * rangeX / (double)preview.width();
 				double chunkX1 = detected.minX() + (px + 1.0D) * rangeX / preview.width();
 				int rawX0 = chunkToScreenX(chunkX0);
@@ -285,9 +286,10 @@ public final class ChunkFillScreen extends Screen {
 				int color;
 				if (preview.invalid()[index]) {
 					color = 0xFFB91C1C;
-				} else if (partialCount > 0) {
+				} else if (partialCount > savedCount) {
 					color = 0xFFD97706;
 				} else {
+					density = Math.max(1, density);
 					int green = 45 + density * 170 / 255;
 					int red = 8 + density * 24 / 255;
 					color = 0xFF000000 | red << 16 | green << 8 | 35;
