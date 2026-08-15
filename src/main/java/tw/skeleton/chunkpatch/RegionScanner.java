@@ -148,6 +148,7 @@ public final class RegionScanner {
 				);
 			}
 		}
+		XaeroMapCoverageScanner.apply(dimensionPath, dimensionId, partial, renderable);
 
 		ChunkBounds bounds = extrema[0] == Integer.MAX_VALUE
 			? null
