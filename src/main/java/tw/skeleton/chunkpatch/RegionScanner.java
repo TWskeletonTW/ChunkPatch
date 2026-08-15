@@ -27,11 +27,27 @@ public final class RegionScanner {
 	private static final int LOCATION_TABLE_BYTES = 4096;
 	private static final int SECTOR_BYTES = 4096;
 	private static final int MAX_NBT_DEPTH = 512;
+	static final byte STATE_EMPTY = 0;
+	static final byte STATE_FULL = 1;
+	static final byte STATE_PARTIAL = 2;
+	static final byte STATE_CORRUPT = 3;
 
 	private RegionScanner() {
 	}
 
 	public static ChunkScanResult scan(Path dimensionPath, String dimensionId) throws IOException {
+		return scan(dimensionPath, dimensionId, RegionScanCache.open(dimensionPath));
+	}
+
+	static ChunkScanResult scan(Path dimensionPath, String dimensionId, Path cacheDirectory) throws IOException {
+		return scan(dimensionPath, dimensionId, RegionScanCache.open(cacheDirectory, dimensionPath));
+	}
+
+	private static ChunkScanResult scan(
+		Path dimensionPath,
+		String dimensionId,
+		RegionScanCache.Session cache
+	) throws IOException {
 		Path regionDirectory = dimensionPath.resolve("region");
 		LongOpenHashSet generated = new LongOpenHashSet();
 		LongOpenHashSet partial = new LongOpenHashSet();
@@ -40,6 +56,8 @@ public final class RegionScanner {
 		int regionFiles = 0;
 		int emptyFiles = 0;
 		int unreadable = 0;
+		int cacheHits = 0;
+		int cacheMisses = 0;
 		Path firstUnreadable = null;
 		String firstUnreadableReason = null;
 
@@ -50,19 +68,28 @@ public final class RegionScanner {
 					if (!matcher.matches()) continue;
 					regionFiles++;
 					try {
-						if (Files.size(regionFile) == 0L) {
+						long size = Files.size(regionFile);
+						if (size == 0L) {
 							emptyFiles++;
 							continue;
 						}
-						scanRegion(
-							regionFile,
-							Integer.parseInt(matcher.group(1)),
-							Integer.parseInt(matcher.group(2)),
-							generated,
-							partial,
-							corrupt,
-							extrema
-						);
+						int regionX = Integer.parseInt(matcher.group(1));
+						int regionZ = Integer.parseInt(matcher.group(2));
+						long modifiedMillis = Files.getLastModifiedTime(regionFile).toMillis();
+						byte[] states = cache.find(regionX, regionZ, size, modifiedMillis);
+						if (states == null) {
+							cacheMisses++;
+							RegionState scanned = scanRegion(regionFile, regionX, regionZ);
+							states = scanned.states();
+							long finalSize = Files.size(regionFile);
+							long finalModifiedMillis = Files.getLastModifiedTime(regionFile).toMillis();
+							if (scanned.cacheable() && finalSize == size && finalModifiedMillis == modifiedMillis) {
+								cache.put(regionX, regionZ, size, modifiedMillis, states);
+							}
+						} else {
+							cacheHits++;
+						}
+						applyStates(regionX, regionZ, states, generated, partial, corrupt, extrema);
 					} catch (IOException | RuntimeException exception) {
 						unreadable++;
 						if (firstUnreadable == null) {
@@ -72,6 +99,13 @@ public final class RegionScanner {
 					}
 				}
 			}
+			cache.save();
+			ChunkPatchMod.LOGGER.info(
+				"Region scan cache for {}: {} reused, {} rescanned",
+				regionDirectory,
+				cacheHits,
+				cacheMisses
+			);
 			if (emptyFiles > 0) {
 				ChunkPatchMod.LOGGER.info("Ignored {} empty region files in {}", emptyFiles, regionDirectory);
 			}
@@ -97,19 +131,15 @@ public final class RegionScanner {
 			corrupt,
 			bounds,
 			regionFiles,
-			unreadable
+			unreadable,
+			cacheHits,
+			cacheMisses
 		);
 	}
 
-	private static void scanRegion(
-		Path file,
-		int regionX,
-		int regionZ,
-		LongOpenHashSet generated,
-		LongOpenHashSet partial,
-		LongOpenHashSet corrupt,
-		int[] extrema
-	) throws IOException {
+	private static RegionState scanRegion(Path file, int regionX, int regionZ) throws IOException {
+		byte[] states = new byte[1024];
+		boolean cacheable = true;
 		try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ)) {
 			long fileSize = channel.size();
 			if (fileSize < LOCATION_TABLE_BYTES) throw new IOException("Region header is truncated");
@@ -121,31 +151,52 @@ public final class RegionScanner {
 			for (int index = 0; index < 1024; index++) {
 				int location = header.getInt();
 				if (location == 0) continue;
-				int chunkX = regionX * 32 + (index & 31);
-				int chunkZ = regionZ * 32 + (index >>> 5);
 				int offset = location >>> 8;
 				int sectors = location & 0xFF;
-				long packed = ChunkPos.asLong(chunkX, chunkZ);
 				if (offset < 2 || sectors == 0 || (long)offset + sectors > fileSectors) {
-					corrupt.add(packed);
+					states[index] = STATE_CORRUPT;
 				} else {
 					try {
-						String status = readChunkStatus(channel, file, fileSize, offset, sectors, chunkX, chunkZ);
-						if (isFullStatus(status)) generated.add(packed);
-						else partial.add(packed);
+						int chunkX = regionX * 32 + (index & 31);
+						int chunkZ = regionZ * 32 + (index >>> 5);
+						ChunkStatusResult chunk = readChunkStatus(channel, file, fileSize, offset, sectors, chunkX, chunkZ);
+						if (chunk.external()) cacheable = false;
+						states[index] = isFullStatus(chunk.status()) ? STATE_FULL : STATE_PARTIAL;
 					} catch (IOException | RuntimeException exception) {
-						corrupt.add(packed);
+						states[index] = STATE_CORRUPT;
 					}
 				}
-				extrema[0] = Math.min(extrema[0], chunkX);
-				extrema[1] = Math.max(extrema[1], chunkX);
-				extrema[2] = Math.min(extrema[2], chunkZ);
-				extrema[3] = Math.max(extrema[3], chunkZ);
 			}
+		}
+		return new RegionState(states, cacheable);
+	}
+
+	private static void applyStates(
+		int regionX,
+		int regionZ,
+		byte[] states,
+		LongOpenHashSet generated,
+		LongOpenHashSet partial,
+		LongOpenHashSet corrupt,
+		int[] extrema
+	) {
+		for (int index = 0; index < states.length; index++) {
+			byte state = states[index];
+			if (state == STATE_EMPTY) continue;
+			int chunkX = regionX * 32 + (index & 31);
+			int chunkZ = regionZ * 32 + (index >>> 5);
+			long packed = ChunkPos.asLong(chunkX, chunkZ);
+			if (state == STATE_FULL) generated.add(packed);
+			else if (state == STATE_PARTIAL) partial.add(packed);
+			else corrupt.add(packed);
+			extrema[0] = Math.min(extrema[0], chunkX);
+			extrema[1] = Math.max(extrema[1], chunkX);
+			extrema[2] = Math.min(extrema[2], chunkZ);
+			extrema[3] = Math.max(extrema[3], chunkZ);
 		}
 	}
 
-	private static String readChunkStatus(
+	private static ChunkStatusResult readChunkStatus(
 		FileChannel channel,
 		Path regionFile,
 		long fileSize,
@@ -192,7 +243,7 @@ public final class RegionScanner {
 			skipString(input);
 			String status = findStatusInCompound(input, 0);
 			if (status == null || status.isBlank()) throw new IOException("Chunk NBT has no Status");
-			return status;
+			return new ChunkStatusResult(status, external);
 		}
 	}
 
@@ -304,5 +355,11 @@ public final class RegionScanner {
 			remaining -= read;
 			return read;
 		}
+	}
+
+	private record RegionState(byte[] states, boolean cacheable) {
+	}
+
+	private record ChunkStatusResult(String status, boolean external) {
 	}
 }

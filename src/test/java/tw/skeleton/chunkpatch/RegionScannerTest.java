@@ -9,6 +9,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.util.zip.DeflaterOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -37,12 +38,14 @@ class RegionScannerTest {
 		Files.createFile(region.resolve("r.2.0.mca"));
 		Files.write(region.resolve("r.3.0.mca"), new byte[] {1});
 
-		ChunkScanResult result = RegionScanner.scan(temporary, "minecraft:overworld");
+		ChunkScanResult result = RegionScanner.scan(temporary, "minecraft:overworld", temporary.resolve("cache"));
 		assertEquals(1L, result.generatedCount());
 		assertEquals(1L, result.partialCount());
 		assertEquals(1L, result.corruptCount());
 		assertEquals(4, result.regionFileCount());
 		assertEquals(1, result.unreadableRegionFileCount());
+		assertEquals(0, result.cachedRegionFileCount());
+		assertEquals(3, result.rescannedRegionFileCount());
 		assertTrue(result.isGenerated(1, 2));
 		assertFalse(result.isPartial(1, 2));
 		assertTrue(result.isPartial(2, 2));
@@ -50,6 +53,39 @@ class RegionScannerTest {
 		assertNotNull(result.detectedBounds());
 		assertEquals(1, result.detectedBounds().minX());
 		assertEquals(36, result.detectedBounds().maxX());
+	}
+
+	@Test
+	void reusesUnchangedRegionsAndInvalidatesChangedFiles() throws Exception {
+		Path world = Files.createDirectories(temporary.resolve("world"));
+		Path region = Files.createDirectories(world.resolve("region"));
+		Path cache = temporary.resolve("cache");
+		Path regionFile = region.resolve("r.-1.2.mca");
+		byte[] original = new byte[3 * SECTOR_BYTES];
+		writeChunk(original, 4 * 32 + 5, 2, "full");
+		Files.write(regionFile, original);
+
+		ChunkScanResult first = RegionScanner.scan(world, "minecraft:overworld", cache);
+		assertEquals(0, first.cachedRegionFileCount());
+		assertEquals(1, first.rescannedRegionFileCount());
+		assertTrue(first.isGenerated(-27, 68));
+
+		ChunkScanResult second = RegionScanner.scan(world, "minecraft:overworld", cache);
+		assertEquals(1, second.cachedRegionFileCount());
+		assertEquals(0, second.rescannedRegionFileCount());
+		assertTrue(second.isGenerated(-27, 68));
+
+		long previousModified = Files.getLastModifiedTime(regionFile).toMillis();
+		byte[] changed = new byte[3 * SECTOR_BYTES];
+		writeChunk(changed, 4 * 32 + 5, 2, "features");
+		Files.write(regionFile, changed);
+		Files.setLastModifiedTime(regionFile, FileTime.fromMillis(previousModified + 2_000L));
+
+		ChunkScanResult third = RegionScanner.scan(world, "minecraft:overworld", cache);
+		assertEquals(0, third.cachedRegionFileCount());
+		assertEquals(1, third.rescannedRegionFileCount());
+		assertFalse(third.isGenerated(-27, 68));
+		assertTrue(third.isPartial(-27, 68));
 	}
 
 	private static void writeChunk(byte[] regionFile, int index, int sector, String status) throws Exception {

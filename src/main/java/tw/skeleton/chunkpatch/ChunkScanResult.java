@@ -19,6 +19,8 @@ public final class ChunkScanResult {
 	private final ChunkBounds detectedBounds;
 	private final int regionFileCount;
 	private final int unreadableRegionFileCount;
+	private final int cachedRegionFileCount;
+	private final int rescannedRegionFileCount;
 	private volatile PreviewData preview;
 
 	public ChunkScanResult(
@@ -29,7 +31,9 @@ public final class ChunkScanResult {
 		LongOpenHashSet corrupt,
 		ChunkBounds detectedBounds,
 		int regionFileCount,
-		int unreadableRegionFileCount
+		int unreadableRegionFileCount,
+		int cachedRegionFileCount,
+		int rescannedRegionFileCount
 	) {
 		this.dimensionPath = dimensionPath;
 		this.dimensionId = dimensionId;
@@ -39,6 +43,8 @@ public final class ChunkScanResult {
 		this.detectedBounds = detectedBounds;
 		this.regionFileCount = regionFileCount;
 		this.unreadableRegionFileCount = unreadableRegionFileCount;
+		this.cachedRegionFileCount = cachedRegionFileCount;
+		this.rescannedRegionFileCount = rescannedRegionFileCount;
 		this.preview = buildPreview();
 	}
 
@@ -50,6 +56,8 @@ public final class ChunkScanResult {
 	public ChunkBounds detectedBounds() { return detectedBounds; }
 	public int regionFileCount() { return regionFileCount; }
 	public int unreadableRegionFileCount() { return unreadableRegionFileCount; }
+	public int cachedRegionFileCount() { return cachedRegionFileCount; }
+	public int rescannedRegionFileCount() { return rescannedRegionFileCount; }
 	public boolean isGenerated(int x, int z) { return generated.contains(ChunkPos.asLong(x, z)); }
 	public boolean isPartial(int x, int z) { return partial.contains(ChunkPos.asLong(x, z)); }
 	public boolean isCorrupt(int x, int z) { return corrupt.contains(ChunkPos.asLong(x, z)); }

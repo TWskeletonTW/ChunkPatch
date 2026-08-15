@@ -382,9 +382,9 @@ public final class ChunkFillScreen extends Screen {
 			panelLine(poseStack, String.format(Locale.ROOT, "最外圍 Z %,d ～ %,d", detected.minBlockZ(), detected.maxBlockZ()), y, 0xFFE5E7EB);
 			y += 13;
 		}
-		panelLine(poseStack, String.format(Locale.ROOT, "區域檔 %,d｜完整 %,d", snapshot.regionFiles(), snapshot.generatedChunks()), y, 0xFFE5E7EB);
+		panelLine(poseStack, String.format(Locale.ROOT, "區域檔 %,d｜快取 %,d｜重掃 %,d", snapshot.regionFiles(), snapshot.cachedRegionFiles(), snapshot.rescannedRegionFiles()), y, 0xFFE5E7EB);
 		y += 13;
-		panelLine(poseStack, String.format(Locale.ROOT, "未完成 %,d｜異常 %,d", snapshot.partialChunks(), snapshot.corruptChunks()), y, 0xFFFFB74D);
+		panelLine(poseStack, String.format(Locale.ROOT, "完整 %,d｜未完成 %,d｜異常 %,d", snapshot.generatedChunks(), snapshot.partialChunks(), snapshot.corruptChunks()), y, 0xFFFFB74D);
 		y += 13;
 		panelLine(poseStack, String.format(Locale.ROOT, "待生成／補全 %,d", snapshot.planned()), y, 0xFFE5E7EB);
 		y += 13;
