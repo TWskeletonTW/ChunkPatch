@@ -48,11 +48,24 @@ public final class ChunkScanResult {
 	public int unreadableRegionFileCount() { return unreadableRegionFileCount; }
 	public boolean isGenerated(int x, int z) { return generated.contains(ChunkPos.asLong(x, z)); }
 	public boolean isCorrupt(int x, int z) { return corrupt.contains(ChunkPos.asLong(x, z)); }
-	public void markGenerated(int x, int z) { generated.add(ChunkPos.asLong(x, z)); }
+	public void markGenerated(int x, int z) {
+		if (!generated.add(ChunkPos.asLong(x, z)) || detectedBounds == null || !detectedBounds.contains(x, z)) return;
+		PreviewData currentPreview = preview;
+		int index = previewIndex(x, z, currentPreview.width(), currentPreview.height());
+		currentPreview.savedCounts()[index]++;
+	}
 	public LongIterator generatedIterator() { return generated.iterator(); }
 	public LongIterator corruptIterator() { return corrupt.iterator(); }
 	public PreviewData preview() { return preview; }
 	public void rebuildPreview() { this.preview = buildPreview(); }
+
+	private int previewIndex(int chunkX, int chunkZ, int width, int height) {
+		long rangeX = (long)detectedBounds.maxX() - detectedBounds.minX() + 1L;
+		long rangeZ = (long)detectedBounds.maxZ() - detectedBounds.minZ() + 1L;
+		int px = Math.max(0, Math.min(width - 1, (int)(((long)chunkX - detectedBounds.minX()) * width / rangeX)));
+		int pz = Math.max(0, Math.min(height - 1, (int)(((long)chunkZ - detectedBounds.minZ()) * height / rangeZ)));
+		return pz * width + px;
+	}
 
 	private PreviewData buildPreview() {
 		int[] savedCounts = new int[PREVIEW_WIDTH * PREVIEW_HEIGHT];

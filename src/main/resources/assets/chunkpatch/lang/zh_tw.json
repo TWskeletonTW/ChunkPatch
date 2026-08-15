@@ -14,7 +14,12 @@
   "chunkpatch.min_z": "北界 Z",
   "chunkpatch.max_z": "南界 Z",
   "chunkpatch.rate": "每 Tick 區塊數",
-  "chunkpatch.legend": "綠：已存在　黑：未生成　紅：異常　黃框：選取邊界",
+  "chunkpatch.legend": "綠：已有　黑：缺少　紅：異常　黃：選取",
+  "chunkpatch.fit_all": "完整範圍",
+  "chunkpatch.fit_selection": "選取範圍",
+  "chunkpatch.scan_prompt": "按「掃描世界」讀取目前維度",
+  "chunkpatch.map_help": "滾輪縮放｜拖曳平移｜拖黃框調整邊界",
+  "chunkpatch.cursor": "目前進度",
   "chunkpatch.no_world": "請先進入單人世界",
   "chunkpatch.help": "K 開啟介面；拖曳黃框或直接輸入方塊座標",
   "chunkpatch.command.help": "使用 /chunkfill scan|status|pause|resume|stop"

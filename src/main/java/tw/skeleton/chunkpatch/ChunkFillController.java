@@ -362,6 +362,8 @@ public final class ChunkFillController {
 			corruptInside,
 			planned,
 			completed,
+			nextX,
+			nextZ,
 			chunksPerTick,
 			lastUsableBytes,
 			scan == null ? null : scan.preview()
@@ -388,6 +390,8 @@ public final class ChunkFillController {
 		long corruptInside,
 		long planned,
 		long completed,
+		int nextChunkX,
+		int nextChunkZ,
 		int chunksPerTick,
 		long usableBytes,
 		ChunkScanResult.PreviewData preview
