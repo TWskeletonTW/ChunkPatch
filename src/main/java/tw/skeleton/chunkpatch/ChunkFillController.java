@@ -17,6 +17,8 @@ import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 /** Coordinates scanning and throttled generation. Mutations run on the integrated server thread. */
@@ -27,6 +29,12 @@ public final class ChunkFillController {
 	private static final long SAVE_CHECKPOINT_INTERVAL = 256L;
 	private static final DateTimeFormatter CLOCK_TIME = DateTimeFormatter.ofPattern("HH:mm", Locale.ROOT);
 	private static final DateTimeFormatter DATE_TIME = DateTimeFormatter.ofPattern("MM/dd HH:mm", Locale.ROOT);
+	private static final ExecutorService SCAN_EXECUTOR = Executors.newSingleThreadExecutor(task -> {
+		Thread thread = new Thread(task, "ChunkPatch Region Scanner");
+		thread.setDaemon(true);
+		thread.setPriority(Thread.MIN_PRIORITY);
+		return thread;
+	});
 
 	private State state = State.IDLE;
 	private String message = "尚未掃描";
@@ -77,7 +85,7 @@ public final class ChunkFillController {
 				} catch (Exception exception) {
 					throw new RuntimeException(exception);
 				}
-			})
+			}, SCAN_EXECUTOR)
 			.whenComplete((result, error) -> server.execute(() -> completeScan(result, error)));
 	}
 

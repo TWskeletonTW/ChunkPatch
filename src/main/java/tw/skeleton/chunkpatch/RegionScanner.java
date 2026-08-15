@@ -29,6 +29,7 @@ public final class RegionScanner {
 	private static final int LOCATION_TABLE_BYTES = 4096;
 	private static final int SECTOR_BYTES = 4096;
 	private static final int MAX_NBT_DEPTH = 512;
+	private static final int CACHE_CHECKPOINT_INTERVAL = 1024;
 	static final byte STATE_EMPTY = 0;
 	static final byte STATE_FULL = 1;
 	static final byte STATE_PARTIAL = 2;
@@ -86,6 +87,7 @@ public final class RegionScanner {
 			regionFiles = files.size();
 			progress.update(0, regionFiles);
 			int completedRegionFiles = 0;
+			int regionsSinceCheckpoint = 0;
 			for (Path regionFile : files) {
 				Matcher matcher = REGION_NAME.matcher(regionFile.getFileName().toString());
 				try {
@@ -120,6 +122,10 @@ public final class RegionScanner {
 					}
 				} finally {
 					progress.update(++completedRegionFiles, regionFiles);
+					if (++regionsSinceCheckpoint >= CACHE_CHECKPOINT_INTERVAL) {
+						cache.save();
+						regionsSinceCheckpoint = 0;
+					}
 				}
 			}
 			cache.save();
@@ -164,11 +170,13 @@ public final class RegionScanner {
 	private static RegionState scanRegion(Path file, int regionX, int regionZ) throws IOException {
 		byte[] states = new byte[1024];
 		boolean cacheable = true;
+		Inflater inflater = new Inflater();
 		try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ)) {
 			long fileSize = channel.size();
 			if (fileSize < LOCATION_TABLE_BYTES) throw new IOException("Region header is truncated");
 			long fileSectors = (fileSize + SECTOR_BYTES - 1L) / SECTOR_BYTES;
 			ByteBuffer header = ByteBuffer.allocate(LOCATION_TABLE_BYTES).order(ByteOrder.BIG_ENDIAN);
+			ByteBuffer prefix = ByteBuffer.allocate(5).order(ByteOrder.BIG_ENDIAN);
 			readFully(channel, header, 0L);
 			header.flip();
 
@@ -183,7 +191,17 @@ public final class RegionScanner {
 					try {
 						int chunkX = regionX * 32 + (index & 31);
 						int chunkZ = regionZ * 32 + (index >>> 5);
-						ChunkStatusResult chunk = readChunkStatus(channel, file, fileSize, offset, sectors, chunkX, chunkZ);
+						ChunkStatusResult chunk = readChunkStatus(
+							channel,
+							file,
+							fileSize,
+							offset,
+							sectors,
+							chunkX,
+							chunkZ,
+							prefix,
+							inflater
+						);
 						if (chunk.external()) cacheable = false;
 						states[index] = classifyStatus(chunk.status());
 					} catch (IOException | RuntimeException exception) {
@@ -191,6 +209,11 @@ public final class RegionScanner {
 					}
 				}
 			}
+		} finally {
+			// Inflater owns native zlib state. Reusing one instance for all 1024
+			// chunks in a region avoids millions of Cleaner registrations and the
+			// resulting G1/native-memory pressure during a first full-world scan.
+			inflater.end();
 		}
 		return new RegionState(states, cacheable);
 	}
@@ -229,10 +252,12 @@ public final class RegionScanner {
 		int offset,
 		int sectors,
 		int chunkX,
-		int chunkZ
+		int chunkZ,
+		ByteBuffer prefix,
+		Inflater inflater
 	) throws IOException {
 		long chunkPosition = (long)offset * SECTOR_BYTES;
-		ByteBuffer prefix = ByteBuffer.allocate(5).order(ByteOrder.BIG_ENDIAN);
+		prefix.clear();
 		readFully(channel, prefix, chunkPosition);
 		prefix.flip();
 		int length = prefix.getInt();
@@ -255,7 +280,10 @@ public final class RegionScanner {
 		try {
 			decoded = switch (compressionType) {
 				case 1 -> new GZIPInputStream(payload, 512);
-				case 2 -> new InflaterInputStream(payload, new Inflater(), 512);
+				case 2 -> {
+					inflater.reset();
+					yield new InflaterInputStream(payload, inflater, 512);
+				}
 				case 3 -> payload;
 				default -> throw new IOException("Unsupported chunk compression type " + compressionType);
 			};
