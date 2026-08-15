@@ -26,9 +26,10 @@ class RegionScannerTest {
 	@Test
 	void classifiesFullPartialAndInvalidChunksFromPayloadStatus() throws Exception {
 		Path region = Files.createDirectories(temporary.resolve("region"));
-		byte[] validFile = new byte[4 * SECTOR_BYTES];
+		byte[] validFile = new byte[5 * SECTOR_BYTES];
 		writeChunk(validFile, 2 * 32 + 1, 2, "full");
-		writeChunk(validFile, 2 * 32 + 2, 3, "structure_starts");
+		writeChunk(validFile, 2 * 32 + 2, 3, "features");
+		writeChunk(validFile, 2 * 32 + 3, 4, "surface");
 		Files.write(region.resolve("r.0.0.mca"), validFile);
 
 		byte[] invalidFile = new byte[2 * SECTOR_BYTES];
@@ -39,16 +40,19 @@ class RegionScannerTest {
 		Files.write(region.resolve("r.3.0.mca"), new byte[] {1});
 
 		ChunkScanResult result = RegionScanner.scan(temporary, "minecraft:overworld", temporary.resolve("cache"));
-		assertEquals(1L, result.generatedCount());
+		assertEquals(1L, result.fullCount());
+		assertEquals(1L, result.renderableCount());
+		assertEquals(2L, result.mapReadyCount());
 		assertEquals(1L, result.partialCount());
 		assertEquals(1L, result.corruptCount());
 		assertEquals(4, result.regionFileCount());
 		assertEquals(1, result.unreadableRegionFileCount());
 		assertEquals(0, result.cachedRegionFileCount());
 		assertEquals(3, result.rescannedRegionFileCount());
-		assertTrue(result.isGenerated(1, 2));
+		assertTrue(result.isMapReady(1, 2));
 		assertFalse(result.isPartial(1, 2));
-		assertTrue(result.isPartial(2, 2));
+		assertTrue(result.isMapReady(2, 2));
+		assertTrue(result.isPartial(3, 2));
 		assertTrue(result.isCorrupt(36, 3));
 		assertNotNull(result.detectedBounds());
 		assertEquals(1, result.detectedBounds().minX());
@@ -68,23 +72,23 @@ class RegionScannerTest {
 		ChunkScanResult first = RegionScanner.scan(world, "minecraft:overworld", cache);
 		assertEquals(0, first.cachedRegionFileCount());
 		assertEquals(1, first.rescannedRegionFileCount());
-		assertTrue(first.isGenerated(-27, 68));
+		assertTrue(first.isMapReady(-27, 68));
 
 		ChunkScanResult second = RegionScanner.scan(world, "minecraft:overworld", cache);
 		assertEquals(1, second.cachedRegionFileCount());
 		assertEquals(0, second.rescannedRegionFileCount());
-		assertTrue(second.isGenerated(-27, 68));
+		assertTrue(second.isMapReady(-27, 68));
 
 		long previousModified = Files.getLastModifiedTime(regionFile).toMillis();
 		byte[] changed = new byte[3 * SECTOR_BYTES];
-		writeChunk(changed, 4 * 32 + 5, 2, "features");
+		writeChunk(changed, 4 * 32 + 5, 2, "surface");
 		Files.write(regionFile, changed);
 		Files.setLastModifiedTime(regionFile, FileTime.fromMillis(previousModified + 2_000L));
 
 		ChunkScanResult third = RegionScanner.scan(world, "minecraft:overworld", cache);
 		assertEquals(0, third.cachedRegionFileCount());
 		assertEquals(1, third.rescannedRegionFileCount());
-		assertFalse(third.isGenerated(-27, 68));
+		assertFalse(third.isMapReady(-27, 68));
 		assertTrue(third.isPartial(-27, 68));
 	}
 

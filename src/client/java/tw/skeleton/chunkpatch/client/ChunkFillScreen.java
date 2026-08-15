@@ -375,6 +375,12 @@ public final class ChunkFillScreen extends Screen {
 		y += 17;
 		panelLine(poseStack, "維度：" + (snapshot.dimensionId() == null ? "-" : snapshot.dimensionId()), y, 0xFFE5E7EB);
 		y += 13;
+		if (snapshot.state() == ChunkFillController.State.SCANNING) {
+			panelLine(poseStack, String.format(Locale.ROOT, "掃描 %,d / %,d（%.1f%%）", snapshot.scannedRegionFiles(), snapshot.totalRegionFiles(), snapshot.scanProgressPercent()), y, 0xFFFFD54A);
+			y += 13;
+			panelLine(poseStack, "預估剩餘 " + snapshot.scanEtaText(), y, 0xFFFFD54A);
+			return;
+		}
 		ChunkBounds detected = snapshot.detectedBounds();
 		if (detected != null) {
 			panelLine(poseStack, String.format(Locale.ROOT, "最外圍 X %,d ～ %,d", detected.minBlockX(), detected.maxBlockX()), y, 0xFFE5E7EB);
@@ -384,11 +390,17 @@ public final class ChunkFillScreen extends Screen {
 		}
 		panelLine(poseStack, String.format(Locale.ROOT, "區域檔 %,d｜快取 %,d｜重掃 %,d", snapshot.regionFiles(), snapshot.cachedRegionFiles(), snapshot.rescannedRegionFiles()), y, 0xFFE5E7EB);
 		y += 13;
-		panelLine(poseStack, String.format(Locale.ROOT, "完整 %,d｜未完成 %,d｜異常 %,d", snapshot.generatedChunks(), snapshot.partialChunks(), snapshot.corruptChunks()), y, 0xFFFFB74D);
+		panelLine(poseStack, String.format(Locale.ROOT, "完整 %,d｜可繪半成品 %,d", snapshot.fullChunks(), snapshot.renderableChunks()), y, 0xFF63E68B);
 		y += 13;
-		panelLine(poseStack, String.format(Locale.ROOT, "待生成／補全 %,d", snapshot.planned()), y, 0xFFE5E7EB);
+		panelLine(poseStack, String.format(Locale.ROOT, "不可繪半成品 %,d｜異常 %,d", snapshot.partialChunks(), snapshot.corruptChunks()), y, 0xFFFFB74D);
+		y += 13;
+		panelLine(poseStack, String.format(Locale.ROOT, "待生成到 FEATURES %,d", snapshot.planned()), y, 0xFFE5E7EB);
 		y += 13;
 		panelLine(poseStack, String.format(Locale.ROOT, "進度 %,d / %,d（%.1f%%）", snapshot.completed(), snapshot.planned(), snapshot.progressPercent()), y, 0xFFE5E7EB);
+		if (snapshot.planned() > 0L && (snapshot.state() == ChunkFillController.State.RUNNING || snapshot.state() == ChunkFillController.State.PAUSED)) {
+			y += 13;
+			panelLine(poseStack, "預估剩餘 " + snapshot.generationEtaText(), y, 0xFFFFD54A);
+		}
 	}
 
 	private void label(PoseStack poseStack, String key, int x, int y) {

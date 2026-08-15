@@ -15,6 +15,8 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.GZIPInputStream;
@@ -31,25 +33,37 @@ public final class RegionScanner {
 	static final byte STATE_FULL = 1;
 	static final byte STATE_PARTIAL = 2;
 	static final byte STATE_CORRUPT = 3;
+	static final byte STATE_RENDERABLE = 4;
+	private static final ScanProgressListener NO_PROGRESS = (completed, total) -> { };
 
 	private RegionScanner() {
 	}
 
 	public static ChunkScanResult scan(Path dimensionPath, String dimensionId) throws IOException {
-		return scan(dimensionPath, dimensionId, RegionScanCache.open(dimensionPath));
+		return scan(dimensionPath, dimensionId, RegionScanCache.open(dimensionPath), NO_PROGRESS);
+	}
+
+	public static ChunkScanResult scan(
+		Path dimensionPath,
+		String dimensionId,
+		ScanProgressListener progress
+	) throws IOException {
+		return scan(dimensionPath, dimensionId, RegionScanCache.open(dimensionPath), progress);
 	}
 
 	static ChunkScanResult scan(Path dimensionPath, String dimensionId, Path cacheDirectory) throws IOException {
-		return scan(dimensionPath, dimensionId, RegionScanCache.open(cacheDirectory, dimensionPath));
+		return scan(dimensionPath, dimensionId, RegionScanCache.open(cacheDirectory, dimensionPath), NO_PROGRESS);
 	}
 
 	private static ChunkScanResult scan(
 		Path dimensionPath,
 		String dimensionId,
-		RegionScanCache.Session cache
+		RegionScanCache.Session cache,
+		ScanProgressListener progress
 	) throws IOException {
 		Path regionDirectory = dimensionPath.resolve("region");
-		LongOpenHashSet generated = new LongOpenHashSet();
+		LongOpenHashSet full = new LongOpenHashSet();
+		LongOpenHashSet renderable = new LongOpenHashSet();
 		LongOpenHashSet partial = new LongOpenHashSet();
 		LongOpenHashSet corrupt = new LongOpenHashSet();
 		int[] extrema = {Integer.MAX_VALUE, Integer.MIN_VALUE, Integer.MAX_VALUE, Integer.MIN_VALUE};
@@ -62,41 +76,50 @@ public final class RegionScanner {
 		String firstUnreadableReason = null;
 
 		if (Files.isDirectory(regionDirectory)) {
+			List<Path> files = new ArrayList<>();
 			try (DirectoryStream<Path> stream = Files.newDirectoryStream(regionDirectory, "r.*.*.mca")) {
 				for (Path regionFile : stream) {
 					Matcher matcher = REGION_NAME.matcher(regionFile.getFileName().toString());
+					if (matcher.matches()) files.add(regionFile);
+				}
+			}
+			regionFiles = files.size();
+			progress.update(0, regionFiles);
+			int completedRegionFiles = 0;
+			for (Path regionFile : files) {
+				Matcher matcher = REGION_NAME.matcher(regionFile.getFileName().toString());
+				try {
 					if (!matcher.matches()) continue;
-					regionFiles++;
-					try {
-						long size = Files.size(regionFile);
-						if (size == 0L) {
-							emptyFiles++;
-							continue;
-						}
-						int regionX = Integer.parseInt(matcher.group(1));
-						int regionZ = Integer.parseInt(matcher.group(2));
-						long modifiedMillis = Files.getLastModifiedTime(regionFile).toMillis();
-						byte[] states = cache.find(regionX, regionZ, size, modifiedMillis);
-						if (states == null) {
-							cacheMisses++;
-							RegionState scanned = scanRegion(regionFile, regionX, regionZ);
-							states = scanned.states();
-							long finalSize = Files.size(regionFile);
-							long finalModifiedMillis = Files.getLastModifiedTime(regionFile).toMillis();
-							if (scanned.cacheable() && finalSize == size && finalModifiedMillis == modifiedMillis) {
-								cache.put(regionX, regionZ, size, modifiedMillis, states);
-							}
-						} else {
-							cacheHits++;
-						}
-						applyStates(regionX, regionZ, states, generated, partial, corrupt, extrema);
-					} catch (IOException | RuntimeException exception) {
-						unreadable++;
-						if (firstUnreadable == null) {
-							firstUnreadable = regionFile;
-							firstUnreadableReason = exception.getMessage();
-						}
+					long size = Files.size(regionFile);
+					if (size == 0L) {
+						emptyFiles++;
+						continue;
 					}
+					int regionX = Integer.parseInt(matcher.group(1));
+					int regionZ = Integer.parseInt(matcher.group(2));
+					long modifiedMillis = Files.getLastModifiedTime(regionFile).toMillis();
+					byte[] states = cache.find(regionX, regionZ, size, modifiedMillis);
+					if (states == null) {
+						cacheMisses++;
+						RegionState scanned = scanRegion(regionFile, regionX, regionZ);
+						states = scanned.states();
+						long finalSize = Files.size(regionFile);
+						long finalModifiedMillis = Files.getLastModifiedTime(regionFile).toMillis();
+						if (scanned.cacheable() && finalSize == size && finalModifiedMillis == modifiedMillis) {
+							cache.put(regionX, regionZ, size, modifiedMillis, states);
+						}
+					} else {
+						cacheHits++;
+					}
+					applyStates(regionX, regionZ, states, full, renderable, partial, corrupt, extrema);
+				} catch (IOException | RuntimeException exception) {
+					unreadable++;
+					if (firstUnreadable == null) {
+						firstUnreadable = regionFile;
+						firstUnreadableReason = exception.getMessage();
+					}
+				} finally {
+					progress.update(++completedRegionFiles, regionFiles);
 				}
 			}
 			cache.save();
@@ -126,7 +149,8 @@ public final class RegionScanner {
 		return new ChunkScanResult(
 			dimensionPath.toAbsolutePath().normalize(),
 			dimensionId,
-			generated,
+			full,
+			renderable,
 			partial,
 			corrupt,
 			bounds,
@@ -161,7 +185,7 @@ public final class RegionScanner {
 						int chunkZ = regionZ * 32 + (index >>> 5);
 						ChunkStatusResult chunk = readChunkStatus(channel, file, fileSize, offset, sectors, chunkX, chunkZ);
 						if (chunk.external()) cacheable = false;
-						states[index] = isFullStatus(chunk.status()) ? STATE_FULL : STATE_PARTIAL;
+						states[index] = classifyStatus(chunk.status());
 					} catch (IOException | RuntimeException exception) {
 						states[index] = STATE_CORRUPT;
 					}
@@ -175,7 +199,8 @@ public final class RegionScanner {
 		int regionX,
 		int regionZ,
 		byte[] states,
-		LongOpenHashSet generated,
+		LongOpenHashSet full,
+		LongOpenHashSet renderable,
 		LongOpenHashSet partial,
 		LongOpenHashSet corrupt,
 		int[] extrema
@@ -186,7 +211,8 @@ public final class RegionScanner {
 			int chunkX = regionX * 32 + (index & 31);
 			int chunkZ = regionZ * 32 + (index >>> 5);
 			long packed = ChunkPos.asLong(chunkX, chunkZ);
-			if (state == STATE_FULL) generated.add(packed);
+			if (state == STATE_FULL) full.add(packed);
+			else if (state == STATE_RENDERABLE) renderable.add(packed);
 			else if (state == STATE_PARTIAL) partial.add(packed);
 			else corrupt.add(packed);
 			extrema[0] = Math.min(extrema[0], chunkX);
@@ -247,8 +273,13 @@ public final class RegionScanner {
 		}
 	}
 
-	private static boolean isFullStatus(String status) {
-		return "full".equals(status) || "minecraft:full".equals(status);
+	private static byte classifyStatus(String status) {
+		String normalized = status.startsWith("minecraft:") ? status.substring("minecraft:".length()) : status;
+		return switch (normalized) {
+			case "full" -> STATE_FULL;
+			case "features", "initialize_light", "light", "spawn" -> STATE_RENDERABLE;
+			default -> STATE_PARTIAL;
+		};
 	}
 
 	private static String findStatusInCompound(DataInputStream input, int depth) throws IOException {
@@ -361,5 +392,10 @@ public final class RegionScanner {
 	}
 
 	private record ChunkStatusResult(String status, boolean external) {
+	}
+
+	@FunctionalInterface
+	public interface ScanProgressListener {
+		void update(int completedRegionFiles, int totalRegionFiles);
 	}
 }

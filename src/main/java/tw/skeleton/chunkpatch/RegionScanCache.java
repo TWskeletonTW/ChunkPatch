@@ -23,7 +23,7 @@ import java.util.Map;
 /** Persistent, per-dimension cache for the 1024 chunk states in each Anvil region file. */
 final class RegionScanCache {
 	private static final int MAGIC = 0x43504348; // CPCH
-	private static final int VERSION = 1;
+	private static final int VERSION = 2;
 	private static final int CHUNKS_PER_REGION = 1024;
 	private static final int MAX_REGION_ENTRIES = 1_000_000;
 
@@ -66,7 +66,7 @@ final class RegionScanCache {
 				byte[] states = input.readNBytes(CHUNKS_PER_REGION);
 				if (states.length != CHUNKS_PER_REGION) throw new EOFException("Truncated cache entry");
 				for (byte state : states) {
-					if (state < RegionScanner.STATE_EMPTY || state > RegionScanner.STATE_CORRUPT) {
+					if (state < RegionScanner.STATE_EMPTY || state > RegionScanner.STATE_RENDERABLE) {
 						throw new IOException("Invalid cached chunk state");
 					}
 				}
