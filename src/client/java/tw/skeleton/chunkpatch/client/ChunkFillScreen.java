@@ -275,7 +275,8 @@ public final class ChunkFillScreen extends Screen {
 			for (int px = 0; px < preview.width(); px++) {
 				int index = pz * preview.width() + px;
 				int density = preview.density(index);
-				if (density == 0 && !preview.invalid()[index]) continue;
+				int partialCount = preview.partialCounts()[index];
+				if (density == 0 && partialCount == 0 && !preview.invalid()[index]) continue;
 				double chunkX0 = detected.minX() + px * rangeX / (double)preview.width();
 				double chunkX1 = detected.minX() + (px + 1.0D) * rangeX / preview.width();
 				int rawX0 = chunkToScreenX(chunkX0);
@@ -284,6 +285,8 @@ public final class ChunkFillScreen extends Screen {
 				int color;
 				if (preview.invalid()[index]) {
 					color = 0xFFB91C1C;
+				} else if (partialCount > 0) {
+					color = 0xFFD97706;
 				} else {
 					int green = 45 + density * 170 / 255;
 					int red = 8 + density * 24 / 255;
@@ -379,9 +382,11 @@ public final class ChunkFillScreen extends Screen {
 			panelLine(poseStack, String.format(Locale.ROOT, "最外圍 Z %,d ～ %,d", detected.minBlockZ(), detected.maxBlockZ()), y, 0xFFE5E7EB);
 			y += 13;
 		}
-		panelLine(poseStack, String.format(Locale.ROOT, "區域檔 %,d｜已有 %,d", snapshot.regionFiles(), snapshot.generatedChunks()), y, 0xFFE5E7EB);
+		panelLine(poseStack, String.format(Locale.ROOT, "區域檔 %,d｜完整 %,d", snapshot.regionFiles(), snapshot.generatedChunks()), y, 0xFFE5E7EB);
 		y += 13;
-		panelLine(poseStack, String.format(Locale.ROOT, "異常 %,d｜待生成 %,d", snapshot.corruptChunks(), snapshot.planned()), y, 0xFFE5E7EB);
+		panelLine(poseStack, String.format(Locale.ROOT, "未完成 %,d｜異常 %,d", snapshot.partialChunks(), snapshot.corruptChunks()), y, 0xFFFFB74D);
+		y += 13;
+		panelLine(poseStack, String.format(Locale.ROOT, "待生成／補全 %,d", snapshot.planned()), y, 0xFFE5E7EB);
 		y += 13;
 		panelLine(poseStack, String.format(Locale.ROOT, "進度 %,d / %,d（%.1f%%）", snapshot.completed(), snapshot.planned(), snapshot.progressPercent()), y, 0xFFE5E7EB);
 	}

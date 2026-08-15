@@ -14,7 +14,7 @@
   "chunkpatch.min_z": "North Z",
   "chunkpatch.max_z": "South Z",
   "chunkpatch.rate": "Chunks per Tick",
-  "chunkpatch.legend": "Green: saved  Black: missing  Red: invalid  Yellow: selection",
+  "chunkpatch.legend": "Green: full  Orange: partial  Black: missing  Red: invalid  Yellow: selection",
   "chunkpatch.fit_all": "Fit All",
   "chunkpatch.fit_selection": "Fit Selection",
   "chunkpatch.scan_prompt": "Press Scan World to read this dimension",

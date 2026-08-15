@@ -14,7 +14,7 @@
   "chunkpatch.min_z": "北界 Z",
   "chunkpatch.max_z": "南界 Z",
   "chunkpatch.rate": "每 Tick 區塊數",
-  "chunkpatch.legend": "綠：已有　黑：缺少　紅：異常　黃：選取",
+  "chunkpatch.legend": "綠：完整　橘：未完成　黑：缺少　紅：異常　黃：選取",
   "chunkpatch.fit_all": "完整範圍",
   "chunkpatch.fit_selection": "選取範圍",
   "chunkpatch.scan_prompt": "按「掃描世界」讀取目前維度",

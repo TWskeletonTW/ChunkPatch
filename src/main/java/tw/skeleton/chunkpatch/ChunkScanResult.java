@@ -14,6 +14,7 @@ public final class ChunkScanResult {
 	private final Path dimensionPath;
 	private final String dimensionId;
 	private final LongOpenHashSet generated;
+	private final LongOpenHashSet partial;
 	private final LongOpenHashSet corrupt;
 	private final ChunkBounds detectedBounds;
 	private final int regionFileCount;
@@ -24,6 +25,7 @@ public final class ChunkScanResult {
 		Path dimensionPath,
 		String dimensionId,
 		LongOpenHashSet generated,
+		LongOpenHashSet partial,
 		LongOpenHashSet corrupt,
 		ChunkBounds detectedBounds,
 		int regionFileCount,
@@ -32,6 +34,7 @@ public final class ChunkScanResult {
 		this.dimensionPath = dimensionPath;
 		this.dimensionId = dimensionId;
 		this.generated = generated;
+		this.partial = partial;
 		this.corrupt = corrupt;
 		this.detectedBounds = detectedBounds;
 		this.regionFileCount = regionFileCount;
@@ -42,19 +45,25 @@ public final class ChunkScanResult {
 	public Path dimensionPath() { return dimensionPath; }
 	public String dimensionId() { return dimensionId; }
 	public long generatedCount() { return generated.size(); }
+	public long partialCount() { return partial.size(); }
 	public long corruptCount() { return corrupt.size(); }
 	public ChunkBounds detectedBounds() { return detectedBounds; }
 	public int regionFileCount() { return regionFileCount; }
 	public int unreadableRegionFileCount() { return unreadableRegionFileCount; }
 	public boolean isGenerated(int x, int z) { return generated.contains(ChunkPos.asLong(x, z)); }
+	public boolean isPartial(int x, int z) { return partial.contains(ChunkPos.asLong(x, z)); }
 	public boolean isCorrupt(int x, int z) { return corrupt.contains(ChunkPos.asLong(x, z)); }
 	public void markGenerated(int x, int z) {
-		if (!generated.add(ChunkPos.asLong(x, z)) || detectedBounds == null || !detectedBounds.contains(x, z)) return;
+		long packed = ChunkPos.asLong(x, z);
+		boolean wasPartial = partial.remove(packed);
+		if (!generated.add(packed) || detectedBounds == null || !detectedBounds.contains(x, z)) return;
 		PreviewData currentPreview = preview;
 		int index = previewIndex(x, z, currentPreview.width(), currentPreview.height());
 		currentPreview.savedCounts()[index]++;
+		if (wasPartial && currentPreview.partialCounts()[index] > 0) currentPreview.partialCounts()[index]--;
 	}
 	public LongIterator generatedIterator() { return generated.iterator(); }
+	public LongIterator partialIterator() { return partial.iterator(); }
 	public LongIterator corruptIterator() { return corrupt.iterator(); }
 	public PreviewData preview() { return preview; }
 	public void rebuildPreview() { this.preview = buildPreview(); }
@@ -69,9 +78,10 @@ public final class ChunkScanResult {
 
 	private PreviewData buildPreview() {
 		int[] savedCounts = new int[PREVIEW_WIDTH * PREVIEW_HEIGHT];
+		int[] partialCounts = new int[savedCounts.length];
 		boolean[] invalid = new boolean[savedCounts.length];
 		if (detectedBounds == null) {
-			return new PreviewData(PREVIEW_WIDTH, PREVIEW_HEIGHT, savedCounts, new int[savedCounts.length], invalid);
+			return new PreviewData(PREVIEW_WIDTH, PREVIEW_HEIGHT, savedCounts, partialCounts, new int[savedCounts.length], invalid);
 		}
 
 		long rangeX = (long)detectedBounds.maxX() - detectedBounds.minX() + 1L;
@@ -84,6 +94,16 @@ public final class ChunkScanResult {
 			int px = Math.min(PREVIEW_WIDTH - 1, (int)(((long)x - detectedBounds.minX()) * PREVIEW_WIDTH / rangeX));
 			int pz = Math.min(PREVIEW_HEIGHT - 1, (int)(((long)z - detectedBounds.minZ()) * PREVIEW_HEIGHT / rangeZ));
 			savedCounts[pz * PREVIEW_WIDTH + px]++;
+		}
+
+		iterator = partial.iterator();
+		while (iterator.hasNext()) {
+			long packed = iterator.nextLong();
+			int x = ChunkPos.getX(packed);
+			int z = ChunkPos.getZ(packed);
+			int px = Math.min(PREVIEW_WIDTH - 1, (int)(((long)x - detectedBounds.minX()) * PREVIEW_WIDTH / rangeX));
+			int pz = Math.min(PREVIEW_HEIGHT - 1, (int)(((long)z - detectedBounds.minZ()) * PREVIEW_HEIGHT / rangeZ));
+			partialCounts[pz * PREVIEW_WIDTH + px]++;
 		}
 
 		iterator = corrupt.iterator();
@@ -109,10 +129,10 @@ public final class ChunkScanResult {
 				possibleCounts[pz * PREVIEW_WIDTH + px] = (int)Math.min(Integer.MAX_VALUE, count);
 			}
 		}
-		return new PreviewData(PREVIEW_WIDTH, PREVIEW_HEIGHT, savedCounts, possibleCounts, invalid);
+		return new PreviewData(PREVIEW_WIDTH, PREVIEW_HEIGHT, savedCounts, partialCounts, possibleCounts, invalid);
 	}
 
-	public record PreviewData(int width, int height, int[] savedCounts, int[] possibleCounts, boolean[] invalid) {
+	public record PreviewData(int width, int height, int[] savedCounts, int[] partialCounts, int[] possibleCounts, boolean[] invalid) {
 		public int density(int index) {
 			int possible = possibleCounts[index];
 			return possible <= 0 ? 0 : (int)Math.min(255L, savedCounts[index] * 255L / possible);

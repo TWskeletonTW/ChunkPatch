@@ -33,6 +33,7 @@ public final class ChunkFillController {
 	private long planned;
 	private long completed;
 	private long existingInside;
+	private long partialInside;
 	private long corruptInside;
 	private long lastUsableBytes = -1L;
 	private long generatedSinceCheckpoint;
@@ -72,11 +73,12 @@ public final class ChunkFillController {
 		this.planned = 0L;
 		this.completed = 0L;
 		this.existingInside = result.generatedCount();
+		this.partialInside = result.partialCount();
 		this.corruptInside = result.corruptCount();
 		this.state = State.READY;
 		this.message = result.detectedBounds() == null
 			? "找不到已生成區塊"
-			: String.format(Locale.ROOT, "掃描完成：%,d 個已生成區塊，%,d 個異常", result.generatedCount(), result.corruptCount());
+			: String.format(Locale.ROOT, "掃描完成：%,d 個完整，%,d 個未完成，%,d 個異常", result.generatedCount(), result.partialCount(), result.corruptCount());
 		restoreProgressIfCompatible();
 	}
 
@@ -103,9 +105,11 @@ public final class ChunkFillController {
 		}
 
 		long existing = countInside(scan.generatedIterator(), bounds);
+		long partial = countInside(scan.partialIterator(), bounds);
 		long invalid = countInside(scan.corruptIterator(), bounds);
 		this.selected = bounds;
 		this.existingInside = existing;
+		this.partialInside = partial;
 		this.corruptInside = invalid;
 		this.planned = Math.max(0L, bounds.area() - existing - invalid);
 		this.completed = 0L;
@@ -114,7 +118,7 @@ public final class ChunkFillController {
 		this.nextZ = bounds.minZ();
 		this.chunksPerTick = Math.max(1, Math.min(8, requestedRate));
 		this.state = State.READY;
-		this.message = String.format(Locale.ROOT, "估算完成：需生成 %,d，保留既有 %,d，異常不覆寫 %,d", planned, existing, invalid);
+		this.message = String.format(Locale.ROOT, "估算完成：需補全 %,d（其中半成品 %,d），保留完整 %,d，異常不覆寫 %,d", planned, partial, existing, invalid);
 		ProgressStore.clear();
 		return true;
 	}
@@ -207,9 +211,11 @@ public final class ChunkFillController {
 				advanceCursor();
 				if (scan.isGenerated(x, z) || scan.isCorrupt(x, z)) continue;
 
+				boolean wasPartial = scan.isPartial(x, z);
 				ChunkAccess chunk = level.getChunkSource().getChunk(x, z, ChunkStatus.FULL, true);
 				if (chunk == null) throw new IllegalStateException("Minecraft returned no chunk for " + x + "," + z);
 				scan.markGenerated(x, z);
+				if (wasPartial && partialInside > 0L) partialInside--;
 				completed++;
 				generatedThisTick++;
 				generatedSinceCheckpoint++;
@@ -332,6 +338,7 @@ public final class ChunkFillController {
 				// selection origin and skip chunks that are actually present on disk;
 				// this also repairs gaps left by a crash or an older ChunkPatch build.
 				existingInside = countInside(scan.generatedIterator(), selected);
+				partialInside = countInside(scan.partialIterator(), selected);
 				corruptInside = countInside(scan.corruptIterator(), selected);
 				planned = Math.max(0L, selected.area() - existingInside - corruptInside);
 				completed = 0L;
@@ -355,10 +362,12 @@ public final class ChunkFillController {
 			scan == null ? null : scan.detectedBounds(),
 			selected,
 			scan == null ? 0L : scan.generatedCount(),
+			scan == null ? 0L : scan.partialCount(),
 			scan == null ? 0L : scan.corruptCount(),
 			scan == null ? 0 : scan.regionFileCount(),
 			scan == null ? 0 : scan.unreadableRegionFileCount(),
 			existingInside,
+			partialInside,
 			corruptInside,
 			planned,
 			completed,
@@ -383,10 +392,12 @@ public final class ChunkFillController {
 		ChunkBounds detectedBounds,
 		ChunkBounds selectedBounds,
 		long generatedChunks,
+		long partialChunks,
 		long corruptChunks,
 		int regionFiles,
 		int unreadableRegionFiles,
 		long existingInside,
+		long partialInside,
 		long corruptInside,
 		long planned,
 		long completed,
