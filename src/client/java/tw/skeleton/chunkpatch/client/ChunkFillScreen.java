@@ -16,6 +16,8 @@ import tw.skeleton.chunkpatch.ChunkFillController;
 import tw.skeleton.chunkpatch.ChunkPatchMod;
 import tw.skeleton.chunkpatch.ChunkScanResult;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 /** Full-screen, zoomable overview and controls for ChunkPatch. */
@@ -29,10 +31,10 @@ public final class ChunkFillScreen extends Screen {
 	private EditBox maxXField;
 	private EditBox minZField;
 	private EditBox maxZField;
-	private EditBox rateField;
 	private Button startButton;
 	private Button pauseButton;
 	private boolean seededFields;
+	private int buttonY;
 
 	private int mapX;
 	private int mapY;
@@ -106,10 +108,8 @@ public final class ChunkFillScreen extends Screen {
 		maxXField = coordinateField(innerX + half + gap, fieldY, half, "chunkpatch.max_x");
 		minZField = coordinateField(innerX, fieldY + 34, half, "chunkpatch.min_z");
 		maxZField = coordinateField(innerX + half + gap, fieldY + 34, half, "chunkpatch.max_z");
-		rateField = coordinateField(innerX, fieldY + 68, innerWidth, "chunkpatch.rate");
-		rateField.setValue("1");
 
-		int buttonY = fieldY + 101;
+		buttonY = fieldY + 67;
 		addRenderableWidget(Button.builder(Component.translatable("chunkpatch.scan"), button -> requestScan())
 			.bounds(innerX, buttonY, half, 20).build());
 		addRenderableWidget(Button.builder(Component.translatable("chunkpatch.estimate"), button -> applyAndEstimate())
@@ -134,8 +134,8 @@ public final class ChunkFillScreen extends Screen {
 	}
 
 	private FieldValues captureFieldValues() {
-		if (minXField == null || maxXField == null || minZField == null || maxZField == null || rateField == null) return null;
-		return new FieldValues(minXField.getValue(), maxXField.getValue(), minZField.getValue(), maxZField.getValue(), rateField.getValue(), seededFields);
+		if (minXField == null || maxXField == null || minZField == null || maxZField == null) return null;
+		return new FieldValues(minXField.getValue(), maxXField.getValue(), minZField.getValue(), maxZField.getValue(), seededFields);
 	}
 
 	private void restoreFieldValues(FieldValues values) {
@@ -143,7 +143,6 @@ public final class ChunkFillScreen extends Screen {
 		maxXField.setValue(values.maxX());
 		minZField.setValue(values.minZ());
 		maxZField.setValue(values.maxZ());
-		rateField.setValue(values.rate());
 		seededFields = values.seeded();
 	}
 
@@ -161,7 +160,6 @@ public final class ChunkFillScreen extends Screen {
 		maxXField.tick();
 		minZField.tick();
 		maxZField.tick();
-		rateField.tick();
 		seedFromSnapshot();
 		ChunkFillController.StatusSnapshot snapshot = ChunkPatchMod.CONTROLLER.snapshot();
 		startButton.active = snapshot.state() == ChunkFillController.State.READY && snapshot.planned() > 0L;
@@ -190,11 +188,9 @@ public final class ChunkFillScreen extends Screen {
 	private void applyAndEstimate() {
 		try {
 			ChunkBounds bounds = boundsFromFields();
-			int rate = Math.max(1, Math.min(8, Integer.parseInt(rateField.getValue())));
-			rateField.setValue(Integer.toString(rate));
-			runOnServer((server, level) -> ChunkPatchMod.CONTROLLER.prepare(level, bounds, rate));
+			runOnServer((server, level) -> ChunkPatchMod.CONTROLLER.prepare(level, bounds));
 		} catch (RuntimeException exception) {
-			setLocalError("座標或速度格式不正確");
+			setLocalError("座標格式不正確");
 		}
 	}
 
@@ -257,13 +253,66 @@ public final class ChunkFillScreen extends Screen {
 	private void renderMap(PoseStack poseStack, ChunkFillController.StatusSnapshot snapshot) {
 		fill(poseStack, mapX - 1, mapY - 1, mapX + mapWidth + 1, mapY + mapHeight + 1, 0xFF8A94A6);
 		fill(poseStack, mapX, mapY, mapX + mapWidth, mapY + mapHeight, 0xFF020509);
-		ChunkScanResult.PreviewData preview = snapshot.preview();
+		ChunkScanResult.PreviewSnapshot preview = snapshot.preview();
 		ChunkBounds detected = snapshot.detectedBounds();
 		if (preview == null || detected == null || !cameraInitialized) {
 			drawCenteredString(poseStack, font, Component.translatable("chunkpatch.scan_prompt"), mapX + mapWidth / 2, mapY + mapHeight / 2 - 4, 0xFFAAB4C4);
 			return;
 		}
 
+		if (!renderExactChunks(poseStack, detected)) renderAggregatedPreview(poseStack, preview, detected);
+
+		renderGrid(poseStack);
+		ChunkBounds selected = uiBounds(snapshot);
+		if (selected != null) drawSelection(poseStack, selected);
+		if (isGenerationActiveOrDraining(snapshot.state())) {
+			drawGenerationCursor(poseStack, snapshot.nextChunkX(), snapshot.nextChunkZ());
+		}
+	}
+
+	/**
+	 * Draws every visible chunk with its own state color once a chunk covers at
+	 * least one pixel. Returns false when the visible window is still too large,
+	 * so the caller falls back to the aggregated preview.
+	 */
+	private boolean renderExactChunks(PoseStack poseStack, ChunkBounds detected) {
+		if (chunksPerPixel > 1.0D) return false;
+		int minCx = Math.max(detected.minX(), (int)Math.floor(screenToChunkX(mapX)));
+		int maxCx = Math.min(detected.maxX(), (int)Math.floor(screenToChunkX(mapX + mapWidth)));
+		int minCz = Math.max(detected.minZ(), (int)Math.floor(screenToChunkZ(mapY)));
+		int maxCz = Math.min(detected.maxZ(), (int)Math.floor(screenToChunkZ(mapY + mapHeight)));
+		if (minCx > maxCx || minCz > maxCz) return true;
+		int chunkColumns = maxCx - minCx + 1;
+		int chunkRows = maxCz - minCz + 1;
+		if ((long)chunkColumns * chunkRows > ChunkFillController.MAX_EXACT_SAMPLE_AREA) return false;
+		byte[] states = ChunkPatchMod.CONTROLLER.sampleChunkStates(minCx, minCz, chunkColumns, chunkRows);
+		if (states == null) return false;
+		for (int row = 0; row < chunkRows; row++) {
+			int chunkZ = minCz + row;
+			int rawY0 = chunkToScreenY(chunkZ);
+			int rawY1 = chunkToScreenY(chunkZ + 1.0D);
+			for (int column = 0; column < chunkColumns; column++) {
+				byte state = states[row * chunkColumns + column];
+				if (state == ChunkFillController.SAMPLE_MISSING) continue;
+				int chunkX = minCx + column;
+				int color = switch (state) {
+					case ChunkFillController.SAMPLE_CORRUPT -> 0xFFB91C1C;
+					case ChunkFillController.SAMPLE_PARTIAL -> 0xFFD97706;
+					default -> 0xFF20D723;
+				};
+				int rawX0 = chunkToScreenX(chunkX);
+				int rawX1 = chunkToScreenX(chunkX + 1.0D);
+				int x0 = Math.max(mapX, rawX0);
+				int x1 = Math.min(mapX + mapWidth, Math.max(rawX0 + 1, rawX1));
+				int y0 = Math.max(mapY, rawY0);
+				int y1 = Math.min(mapY + mapHeight, Math.max(rawY0 + 1, rawY1));
+				if (x1 > x0 && y1 > y0) fill(poseStack, x0, y0, x1, y1, color);
+			}
+		}
+		return true;
+	}
+
+	private void renderAggregatedPreview(PoseStack poseStack, ChunkScanResult.PreviewSnapshot preview, ChunkBounds detected) {
 		long rangeX = (long)detected.maxX() - detected.minX() + 1L;
 		long rangeZ = (long)detected.maxZ() - detected.minZ() + 1L;
 		for (int pz = 0; pz < preview.height(); pz++) {
@@ -275,16 +324,16 @@ public final class ChunkFillScreen extends Screen {
 			for (int px = 0; px < preview.width(); px++) {
 				int index = pz * preview.width() + px;
 				int density = preview.density(index);
-				int savedCount = preview.savedCounts()[index];
-				int partialCount = preview.partialCounts()[index];
-				if (savedCount == 0 && partialCount == 0 && !preview.invalid()[index]) continue;
+				int savedCount = preview.savedCount(index);
+				int partialCount = preview.partialCount(index);
+				if (savedCount == 0 && partialCount == 0 && !preview.invalid(index)) continue;
 				double chunkX0 = detected.minX() + px * rangeX / (double)preview.width();
 				double chunkX1 = detected.minX() + (px + 1.0D) * rangeX / preview.width();
 				int rawX0 = chunkToScreenX(chunkX0);
 				int rawX1 = chunkToScreenX(chunkX1);
 				if (rawX1 < mapX || rawX0 > mapX + mapWidth) continue;
 				int color;
-				if (preview.invalid()[index]) {
+				if (preview.invalid(index)) {
 					color = 0xFFB91C1C;
 				} else if (partialCount > savedCount) {
 					color = 0xFFD97706;
@@ -300,13 +349,6 @@ public final class ChunkFillScreen extends Screen {
 				int y1 = Math.min(mapY + mapHeight, Math.max(rawY0 + 1, rawY1));
 				if (x1 > x0 && y1 > y0) fill(poseStack, x0, y0, x1, y1, color);
 			}
-		}
-
-		renderGrid(poseStack);
-		ChunkBounds selected = uiBounds(snapshot);
-		if (selected != null) drawSelection(poseStack, selected);
-		if (snapshot.state() == ChunkFillController.State.RUNNING || snapshot.state() == ChunkFillController.State.PAUSED) {
-			drawGenerationCursor(poseStack, snapshot.nextChunkX(), snapshot.nextChunkZ());
 		}
 	}
 
@@ -363,16 +405,14 @@ public final class ChunkFillScreen extends Screen {
 		fill(poseStack, panelX - 1, panelY - 1, panelX + panelWidth + 1, panelY + panelHeight + 1, 0xFF697386);
 		fill(poseStack, panelX, panelY, panelX + panelWidth, panelY + panelHeight, 0xE6111822);
 		drawCenteredString(poseStack, font, title, panelX + panelWidth / 2, panelY + 10, 0xFFFFFFFF);
-		String status = font.plainSubstrByWidth(snapshot.message(), panelWidth - 20);
-		drawCenteredString(poseStack, font, Component.literal(status), panelX + panelWidth / 2, panelY + 27, statusColor(snapshot.state()));
+		renderWrappedStatus(poseStack, snapshot.message(), statusColor(snapshot.state()));
 
 		label(poseStack, "chunkpatch.min_x", minXField.getX(), minXField.getY() - 11);
 		label(poseStack, "chunkpatch.max_x", maxXField.getX(), maxXField.getY() - 11);
 		label(poseStack, "chunkpatch.min_z", minZField.getX(), minZField.getY() - 11);
 		label(poseStack, "chunkpatch.max_z", maxZField.getX(), maxZField.getY() - 11);
-		label(poseStack, "chunkpatch.rate", rateField.getX(), rateField.getY() - 11);
 
-		int y = rateField.getY() + 110;
+		int y = buttonY + 77;
 		panelLine(poseStack, Component.translatable("chunkpatch.legend").getString(), y, 0xFFB8C2D1);
 		y += 17;
 		panelLine(poseStack, "維度：" + (snapshot.dimensionId() == null ? "-" : snapshot.dimensionId()), y, 0xFFE5E7EB);
@@ -399,9 +439,32 @@ public final class ChunkFillScreen extends Screen {
 		panelLine(poseStack, String.format(Locale.ROOT, "待生成到 FEATURES %,d", snapshot.planned()), y, 0xFFE5E7EB);
 		y += 13;
 		panelLine(poseStack, String.format(Locale.ROOT, "進度 %,d / %,d（%.1f%%）", snapshot.completed(), snapshot.planned(), snapshot.progressPercent()), y, 0xFFE5E7EB);
-		if (snapshot.planned() > 0L && (snapshot.state() == ChunkFillController.State.RUNNING || snapshot.state() == ChunkFillController.State.PAUSED)) {
+		if (snapshot.planned() > 0L && isGenerationActiveOrDraining(snapshot.state())) {
 			y += 13;
 			panelLine(poseStack, "預估剩餘 " + snapshot.generationEtaText(), y, 0xFFFFD54A);
+		}
+	}
+
+	/** Wraps the status message onto multiple centered lines at the "｜" clause
+	 * boundaries instead of truncating it, so a long ETA is never cut off. */
+	private void renderWrappedStatus(PoseStack poseStack, String message, int color) {
+		int maxWidth = panelWidth - 20;
+		List<String> lines = new ArrayList<>();
+		StringBuilder current = new StringBuilder();
+		for (String segment : message.split("｜")) {
+			String candidate = current.length() == 0 ? segment : current + "｜" + segment;
+			if (current.length() > 0 && font.width(candidate) > maxWidth) {
+				lines.add(current.toString());
+				current = new StringBuilder(segment);
+			} else {
+				current = new StringBuilder(candidate);
+			}
+		}
+		if (current.length() > 0) lines.add(current.toString());
+		int y = panelY + 27;
+		for (String line : lines) {
+			drawCenteredString(poseStack, font, Component.literal(font.plainSubstrByWidth(line, maxWidth)), panelX + panelWidth / 2, y, color);
+			y += font.lineHeight + 1;
 		}
 	}
 
@@ -437,9 +500,16 @@ public final class ChunkFillScreen extends Screen {
 		return switch (state) {
 			case ERROR -> 0xFFFF6B6B;
 			case COMPLETE -> 0xFF63E68B;
-			case RUNNING -> 0xFFFFD54A;
+			case RUNNING, PAUSING, STOPPING -> 0xFFFFD54A;
 			default -> 0xFFE5E7EB;
 		};
+	}
+
+	private static boolean isGenerationActiveOrDraining(ChunkFillController.State state) {
+		return state == ChunkFillController.State.RUNNING
+			|| state == ChunkFillController.State.PAUSED
+			|| state == ChunkFillController.State.PAUSING
+			|| state == ChunkFillController.State.STOPPING;
 	}
 
 	private ChunkBounds uiBounds(ChunkFillController.StatusSnapshot snapshot) {
@@ -598,6 +668,6 @@ public final class ChunkFillScreen extends Screen {
 		void run(MinecraftServer server, ServerLevel level);
 	}
 
-	private record FieldValues(String minX, String maxX, String minZ, String maxZ, String rate, boolean seeded) {
+	private record FieldValues(String minX, String maxX, String minZ, String maxZ, boolean seeded) {
 	}
 }

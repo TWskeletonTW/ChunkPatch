@@ -5,8 +5,16 @@ import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.world.level.ChunkPos;
 
 import java.nio.file.Path;
+import java.util.Arrays;
 
-/** Scan metadata with a generated-set owned and mutated only by the server controller. */
+/**
+ * Scan metadata with a generated-set owned and mutated only by the server
+ * controller. The preview is server-owned mutable counters internally;
+ * readers (the client render thread) only ever see a cloned, immutable
+ * {@link PreviewSnapshot} published after each mutation, so a render frame
+ * can never observe a half-updated array while the server thread is
+ * concurrently incrementing counts for a just-completed target.
+ */
 public final class ChunkScanResult {
 	public static final int PREVIEW_WIDTH = 180;
 	public static final int PREVIEW_HEIGHT = 96;
@@ -22,7 +30,13 @@ public final class ChunkScanResult {
 	private final int unreadableRegionFileCount;
 	private final int cachedRegionFileCount;
 	private final int rescannedRegionFileCount;
-	private volatile PreviewData preview;
+
+	// Server-thread-only mutable preview state. Never handed out directly.
+	private final int[] savedCounts = new int[PREVIEW_WIDTH * PREVIEW_HEIGHT];
+	private final int[] partialCounts = new int[savedCounts.length];
+	private final int[] possibleCounts = new int[savedCounts.length];
+	private final boolean[] invalid = new boolean[savedCounts.length];
+	private volatile PreviewSnapshot publishedPreview;
 
 	public ChunkScanResult(
 		Path dimensionPath,
@@ -48,7 +62,7 @@ public final class ChunkScanResult {
 		this.unreadableRegionFileCount = unreadableRegionFileCount;
 		this.cachedRegionFileCount = cachedRegionFileCount;
 		this.rescannedRegionFileCount = rescannedRegionFileCount;
-		this.preview = buildPreview();
+		rebuildPreview();
 	}
 
 	public Path dimensionPath() { return dimensionPath; }
@@ -69,21 +83,42 @@ public final class ChunkScanResult {
 	}
 	public boolean isPartial(int x, int z) { return partial.contains(ChunkPos.asLong(x, z)); }
 	public boolean isCorrupt(int x, int z) { return corrupt.contains(ChunkPos.asLong(x, z)); }
+
+	/** Server-thread only. Publishes a fresh immutable snapshot afterward. */
 	public void markMapReady(int x, int z) {
 		long packed = ChunkPos.asLong(x, z);
 		boolean wasPartial = partial.remove(packed);
 		if (!renderable.add(packed) || detectedBounds == null || !detectedBounds.contains(x, z)) return;
-		PreviewData currentPreview = preview;
-		int index = previewIndex(x, z, currentPreview.width(), currentPreview.height());
-		currentPreview.savedCounts()[index]++;
-		if (wasPartial && currentPreview.partialCounts()[index] > 0) currentPreview.partialCounts()[index]--;
+		int index = previewIndex(x, z, PREVIEW_WIDTH, PREVIEW_HEIGHT);
+		savedCounts[index]++;
+		if (wasPartial && partialCounts[index] > 0) partialCounts[index]--;
+		publishPreview();
 	}
+
 	public LongIterator fullIterator() { return full.iterator(); }
 	public LongIterator renderableIterator() { return renderable.iterator(); }
 	public LongIterator partialIterator() { return partial.iterator(); }
 	public LongIterator corruptIterator() { return corrupt.iterator(); }
-	public PreviewData preview() { return preview; }
-	public void rebuildPreview() { this.preview = buildPreview(); }
+
+	/** Returns the most recently published immutable snapshot. Safe to call from any thread. */
+	public PreviewSnapshot preview() { return publishedPreview; }
+
+	/** Server-thread only. Fully recomputes counts from the current sets and publishes. */
+	public void rebuildPreview() {
+		recomputeCounts();
+		publishPreview();
+	}
+
+	private void publishPreview() {
+		publishedPreview = new PreviewSnapshot(
+			PREVIEW_WIDTH,
+			PREVIEW_HEIGHT,
+			savedCounts.clone(),
+			partialCounts.clone(),
+			possibleCounts.clone(),
+			invalid.clone()
+		);
+	}
 
 	private int previewIndex(int chunkX, int chunkZ, int width, int height) {
 		long rangeX = (long)detectedBounds.maxX() - detectedBounds.minX() + 1L;
@@ -93,13 +128,12 @@ public final class ChunkScanResult {
 		return pz * width + px;
 	}
 
-	private PreviewData buildPreview() {
-		int[] savedCounts = new int[PREVIEW_WIDTH * PREVIEW_HEIGHT];
-		int[] partialCounts = new int[savedCounts.length];
-		boolean[] invalid = new boolean[savedCounts.length];
-		if (detectedBounds == null) {
-			return new PreviewData(PREVIEW_WIDTH, PREVIEW_HEIGHT, savedCounts, partialCounts, new int[savedCounts.length], invalid);
-		}
+	private void recomputeCounts() {
+		Arrays.fill(savedCounts, 0);
+		Arrays.fill(partialCounts, 0);
+		Arrays.fill(possibleCounts, 0);
+		Arrays.fill(invalid, false);
+		if (detectedBounds == null) return;
 
 		long rangeX = (long)detectedBounds.maxX() - detectedBounds.minX() + 1L;
 		long rangeZ = (long)detectedBounds.maxZ() - detectedBounds.minZ() + 1L;
@@ -143,7 +177,6 @@ public final class ChunkScanResult {
 			invalid[pz * PREVIEW_WIDTH + px] = true;
 		}
 
-		int[] possibleCounts = new int[savedCounts.length];
 		for (int pz = 0; pz < PREVIEW_HEIGHT; pz++) {
 			long z0 = detectedBounds.minZ() + pz * rangeZ / PREVIEW_HEIGHT;
 			long z1 = detectedBounds.minZ() + (pz + 1L) * rangeZ / PREVIEW_HEIGHT - 1L;
@@ -156,10 +189,33 @@ public final class ChunkScanResult {
 				possibleCounts[pz * PREVIEW_WIDTH + px] = (int)Math.min(Integer.MAX_VALUE, count);
 			}
 		}
-		return new PreviewData(PREVIEW_WIDTH, PREVIEW_HEIGHT, savedCounts, partialCounts, possibleCounts, invalid);
 	}
 
-	public record PreviewData(int width, int height, int[] savedCounts, int[] partialCounts, int[] possibleCounts, boolean[] invalid) {
+	/** Immutable, defensively-cloned preview state safe to read from any thread without synchronization. */
+	public static final class PreviewSnapshot {
+		private final int width;
+		private final int height;
+		private final int[] savedCounts;
+		private final int[] partialCounts;
+		private final int[] possibleCounts;
+		private final boolean[] invalid;
+
+		private PreviewSnapshot(int width, int height, int[] savedCounts, int[] partialCounts, int[] possibleCounts, boolean[] invalid) {
+			this.width = width;
+			this.height = height;
+			this.savedCounts = savedCounts;
+			this.partialCounts = partialCounts;
+			this.possibleCounts = possibleCounts;
+			this.invalid = invalid;
+		}
+
+		public int width() { return width; }
+		public int height() { return height; }
+		public int savedCount(int index) { return savedCounts[index]; }
+		public int partialCount(int index) { return partialCounts[index]; }
+		public int possibleCount(int index) { return possibleCounts[index]; }
+		public boolean invalid(int index) { return invalid[index]; }
+
 		public int density(int index) {
 			int possible = possibleCounts[index];
 			return possible <= 0 ? 0 : (int)Math.min(255L, savedCounts[index] * 255L / possible);

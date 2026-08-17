@@ -48,7 +48,10 @@ class RegionScannerTest {
 		assertEquals(4, result.regionFileCount());
 		assertEquals(1, result.unreadableRegionFileCount());
 		assertEquals(0, result.cachedRegionFileCount());
-		assertEquals(3, result.rescannedRegionFileCount());
+		// Only files that were actually read successfully count as "rescanned":
+		// r.0.0.mca and r.1.0.mca. r.3.0.mca throws before a state array ever
+		// exists, so it is unreadable but not also counted as a rescan.
+		assertEquals(2, result.rescannedRegionFileCount());
 		assertTrue(result.isMapReady(1, 2));
 		assertFalse(result.isPartial(1, 2));
 		assertTrue(result.isMapReady(2, 2));

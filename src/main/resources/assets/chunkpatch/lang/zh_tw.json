@@ -13,7 +13,6 @@
   "chunkpatch.max_x": "東界 X",
   "chunkpatch.min_z": "北界 Z",
   "chunkpatch.max_z": "南界 Z",
-  "chunkpatch.rate": "每 Tick 區塊數",
   "chunkpatch.legend": "綠：Xaero 可繪　橘：未達 FEATURES　黑：缺少　紅：異常　黃：選取",
   "chunkpatch.fit_all": "完整範圍",
   "chunkpatch.fit_selection": "選取範圍",

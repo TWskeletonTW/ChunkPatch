@@ -35,10 +35,16 @@ dependencies {
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
 	testImplementation "org.junit.jupiter:junit-jupiter:5.10.2"
 	testRuntimeOnly "org.junit.platform:junit-platform-launcher:1.10.2"
+	testImplementation "org.mockito:mockito-core:5.11.0"
 }
 
 test {
 	useJUnitPlatform()
+	// The toolchain JVM running tests can be newer than the Byte Buddy
+	// version Mockito bundles officially supports; this lets Mockito mock
+	// Minecraft classes anyway instead of failing with an unsupported-class-
+	// file-version error.
+	systemProperty 'net.bytebuddy.experimental', 'true'
 }
 
 processResources {

@@ -5,6 +5,7 @@ import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.CommandSourceStack;
@@ -20,6 +21,10 @@ public final class ChunkPatchMod implements ModInitializer {
 	@Override
 	public void onInitialize() {
 		ServerTickEvents.END_SERVER_TICK.register(CONTROLLER::tick);
+		// A generation future's completion callback can arrive after the
+		// world has already closed. Invalidating the session here makes sure
+		// that stale callback cannot touch a ServerLevel that is going away.
+		ServerLifecycleEvents.SERVER_STOPPING.register(server -> CONTROLLER.onServerStopping());
 		registerCommands();
 		LOGGER.info("ChunkPatch initialized");
 	}
@@ -57,9 +62,7 @@ public final class ChunkPatchMod implements ModInitializer {
 				}));
 
 			RequiredArgumentBuilder<CommandSourceStack, Integer> maxZ = Commands.argument("maxZ", IntegerArgumentType.integer(-30_000_000, 30_000_000));
-			maxZ.executes(context -> startFromCommand(context, 1));
-			maxZ.then(Commands.argument("rate", IntegerArgumentType.integer(1, 8))
-				.executes(context -> startFromCommand(context, IntegerArgumentType.getInteger(context, "rate"))));
+			maxZ.executes(ChunkPatchMod::startFromCommand);
 			RequiredArgumentBuilder<CommandSourceStack, Integer> minZ = Commands.argument("minZ", IntegerArgumentType.integer(-30_000_000, 30_000_000));
 			minZ.then(maxZ);
 			RequiredArgumentBuilder<CommandSourceStack, Integer> maxX = Commands.argument("maxX", IntegerArgumentType.integer(-30_000_000, 30_000_000));
@@ -71,13 +74,13 @@ public final class ChunkPatchMod implements ModInitializer {
 		});
 	}
 
-	private static int startFromCommand(com.mojang.brigadier.context.CommandContext<net.minecraft.commands.CommandSourceStack> context, int rate) {
+	private static int startFromCommand(com.mojang.brigadier.context.CommandContext<net.minecraft.commands.CommandSourceStack> context) {
 		int minX = IntegerArgumentType.getInteger(context, "minX");
 		int maxX = IntegerArgumentType.getInteger(context, "maxX");
 		int minZ = IntegerArgumentType.getInteger(context, "minZ");
 		int maxZ = IntegerArgumentType.getInteger(context, "maxZ");
 		ChunkBounds bounds = ChunkBounds.fromBlocks(minX, maxX, minZ, maxZ);
-		boolean prepared = CONTROLLER.prepare(context.getSource().getLevel(), bounds, rate);
+		boolean prepared = CONTROLLER.prepare(context.getSource().getLevel(), bounds);
 		boolean started = prepared && CONTROLLER.start(context.getSource().getLevel());
 		context.getSource().sendSuccess(Component.literal(CONTROLLER.statusLine()), false);
 		return started ? 1 : 0;

@@ -14,8 +14,10 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.Map;
@@ -23,7 +25,13 @@ import java.util.Map;
 /** Persistent, per-dimension cache for the 1024 chunk states in each Anvil region file. */
 final class RegionScanCache {
 	private static final int MAGIC = 0x43504348; // CPCH
-	private static final int VERSION = 2;
+	// Version 4: modification time is stored as full epoch-second + nanosecond
+	// precision instead of milliseconds, matching the precision the stable-read
+	// check already uses. A size-unchanged region file that is modified twice
+	// within the same millisecond (some filesystems report finer than
+	// millisecond resolution) previously could produce the same millisecond
+	// key for two different states, causing a false cache hit.
+	private static final int VERSION = 4;
 	private static final int CHUNKS_PER_REGION = 1024;
 	private static final int MAX_REGION_ENTRIES = 1_000_000;
 
@@ -62,7 +70,8 @@ final class RegionScanCache {
 				int regionX = input.readInt();
 				int regionZ = input.readInt();
 				long size = input.readLong();
-				long modifiedMillis = input.readLong();
+				long modifiedEpochSecond = input.readLong();
+				int modifiedNano = input.readInt();
 				byte[] states = input.readNBytes(CHUNKS_PER_REGION);
 				if (states.length != CHUNKS_PER_REGION) throw new EOFException("Truncated cache entry");
 				for (byte state : states) {
@@ -70,7 +79,7 @@ final class RegionScanCache {
 						throw new IOException("Invalid cached chunk state");
 					}
 				}
-				entries.put(ChunkPos.asLong(regionX, regionZ), new Entry(size, modifiedMillis, states));
+				entries.put(ChunkPos.asLong(regionX, regionZ), new Entry(size, modifiedEpochSecond, modifiedNano, states));
 			}
 			return entries;
 		}
@@ -97,17 +106,18 @@ final class RegionScanCache {
 			this.stored = stored;
 		}
 
-		byte[] find(int regionX, int regionZ, long size, long modifiedMillis) {
+		byte[] find(int regionX, int regionZ, long size, FileTime modifiedTime) {
 			long key = ChunkPos.asLong(regionX, regionZ);
 			Entry entry = stored.get(key);
-			if (entry == null || entry.size != size || entry.modifiedMillis != modifiedMillis) return null;
+			if (entry == null || entry.size != size || !entry.matches(modifiedTime)) return null;
 			current.put(key, entry);
 			return entry.states;
 		}
 
-		void put(int regionX, int regionZ, long size, long modifiedMillis, byte[] states) {
+		void put(int regionX, int regionZ, long size, FileTime modifiedTime, byte[] states) {
 			if (states.length != CHUNKS_PER_REGION) throw new IllegalArgumentException("A region must contain 1024 chunk states");
-			current.put(ChunkPos.asLong(regionX, regionZ), new Entry(size, modifiedMillis, states.clone()));
+			Instant instant = modifiedTime.toInstant();
+			current.put(ChunkPos.asLong(regionX, regionZ), new Entry(size, instant.getEpochSecond(), instant.getNano(), states.clone()));
 		}
 
 		void save() {
@@ -134,7 +144,8 @@ final class RegionScanCache {
 							output.writeInt(ChunkPos.getX(packed));
 							output.writeInt(ChunkPos.getZ(packed));
 							output.writeLong(entry.size);
-							output.writeLong(entry.modifiedMillis);
+							output.writeLong(entry.modifiedEpochSecond);
+							output.writeInt(entry.modifiedNano);
 							output.write(entry.states);
 						}
 					}
@@ -150,6 +161,10 @@ final class RegionScanCache {
 		}
 	}
 
-	private record Entry(long size, long modifiedMillis, byte[] states) {
+	private record Entry(long size, long modifiedEpochSecond, int modifiedNano, byte[] states) {
+		boolean matches(FileTime modifiedTime) {
+			Instant instant = modifiedTime.toInstant();
+			return instant.getEpochSecond() == modifiedEpochSecond && instant.getNano() == modifiedNano;
+		}
 	}
 }

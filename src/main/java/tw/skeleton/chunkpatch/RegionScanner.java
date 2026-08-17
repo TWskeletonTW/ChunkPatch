@@ -15,7 +15,9 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -30,6 +32,13 @@ public final class RegionScanner {
 	private static final int SECTOR_BYTES = 4096;
 	private static final int MAX_NBT_DEPTH = 512;
 	private static final int CACHE_CHECKPOINT_INTERVAL = 1024;
+	// Minecraft keeps running (and can autosave) while the background scan
+	// thread is reading .mca files, so a region can be mutated mid-read. A
+	// size/mtime stamp taken before and after the read that doesn't match
+	// means the read may have mixed old and new bytes; retry a few times
+	// before giving up, rather than either caching a possibly-torn read or
+	// misclassifying the region as corrupt.
+	private static final int MAX_STABLE_READ_ATTEMPTS = 3;
 	static final byte STATE_EMPTY = 0;
 	static final byte STATE_FULL = 1;
 	static final byte STATE_PARTIAL = 2;
@@ -71,10 +80,12 @@ public final class RegionScanner {
 		int regionFiles = 0;
 		int emptyFiles = 0;
 		int unreadable = 0;
+		int unstable = 0;
 		int cacheHits = 0;
 		int cacheMisses = 0;
 		Path firstUnreadable = null;
 		String firstUnreadableReason = null;
+		Path firstUnstable = null;
 
 		if (Files.isDirectory(regionDirectory)) {
 			List<Path> files = new ArrayList<>();
@@ -85,6 +96,10 @@ public final class RegionScanner {
 				}
 			}
 			regionFiles = files.size();
+			// Scan the smallest region files first. They decompress fastest, so
+			// progress and early scan results (and the cache checkpoint) arrive
+			// sooner instead of waiting behind a handful of large, slow files.
+			files.sort(Comparator.comparingLong(RegionScanner::sizeOrMaxValue));
 			progress.update(0, regionFiles);
 			int completedRegionFiles = 0;
 			int regionsSinceCheckpoint = 0;
@@ -99,16 +114,19 @@ public final class RegionScanner {
 					}
 					int regionX = Integer.parseInt(matcher.group(1));
 					int regionZ = Integer.parseInt(matcher.group(2));
-					long modifiedMillis = Files.getLastModifiedTime(regionFile).toMillis();
-					byte[] states = cache.find(regionX, regionZ, size, modifiedMillis);
+					FileTime modifiedTime = Files.getLastModifiedTime(regionFile);
+					byte[] states = cache.find(regionX, regionZ, size, modifiedTime);
 					if (states == null) {
+						StableRead stable = scanRegionWithStableRead(regionFile, regionX, regionZ);
+						if (stable == null) {
+							unstable++;
+							if (firstUnstable == null) firstUnstable = regionFile;
+							continue;
+						}
 						cacheMisses++;
-						RegionState scanned = scanRegion(regionFile, regionX, regionZ);
-						states = scanned.states();
-						long finalSize = Files.size(regionFile);
-						long finalModifiedMillis = Files.getLastModifiedTime(regionFile).toMillis();
-						if (scanned.cacheable() && finalSize == size && finalModifiedMillis == modifiedMillis) {
-							cache.put(regionX, regionZ, size, modifiedMillis, states);
+						states = stable.states();
+						if (stable.cacheable()) {
+							cache.put(regionX, regionZ, stable.size(), stable.modifiedTime(), states);
 						}
 					} else {
 						cacheHits++;
@@ -147,19 +165,24 @@ public final class RegionScanner {
 					firstUnreadableReason == null ? "unknown error" : firstUnreadableReason
 				);
 			}
+			if (unstable > 0) {
+				ChunkPatchMod.LOGGER.warn(
+					"Skipped {} region files in {} that kept changing during the scan (Minecraft was writing to them); "
+						+ "they were not cached or marked corrupt and will be rescanned next time. First: {}",
+					unstable,
+					regionDirectory,
+					firstUnstable
+				);
+			}
 		}
 		ChunkBounds bounds = extrema[0] == Integer.MAX_VALUE
 			? null
 			: new ChunkBounds(extrema[0], extrema[1], extrema[2], extrema[3]);
-		XaeroMapCoverageScanner.apply(
-			dimensionPath,
-			dimensionId,
-			full,
-			renderable,
-			partial,
-			corrupt,
-			bounds
-		);
+		// Xaero's .xwmc texture cache is intentionally not consulted here. A leaf
+		// texture exists as soon as any one of its 4x4 chunks was drawn, so it
+		// cannot prove per-chunk coverage; skipping generation based on it left
+		// permanent holes in the map. Regenerating an already-drawn chunk to
+		// FEATURES is harmless, so world chunk Status is the only source of truth.
 		return new ChunkScanResult(
 			dimensionPath.toAbsolutePath().normalize(),
 			dimensionId,
@@ -173,6 +196,40 @@ public final class RegionScanner {
 			cacheHits,
 			cacheMisses
 		);
+	}
+
+	/**
+	 * Scans a region file, retrying if a before/after size+mtime stamp shows
+	 * it was mutated during the read (Minecraft can autosave into it while
+	 * the background scan thread is reading). Returns null if the region
+	 * stayed unstable across every attempt; the caller must not cache or
+	 * apply that result, and must not treat it as corrupt — it may well be a
+	 * perfectly valid region that is just being actively written to.
+	 */
+	private static StableRead scanRegionWithStableRead(Path regionFile, int regionX, int regionZ) throws IOException {
+		for (int attempt = 0; attempt < MAX_STABLE_READ_ATTEMPTS; attempt++) {
+			long sizeBefore = Files.size(regionFile);
+			// Compare full FileTime precision, not the millisecond-truncated
+			// value: some filesystems report finer-than-millisecond
+			// resolution, and truncating before comparing could call two
+			// genuinely different writes "the same" instant.
+			FileTime modifiedBefore = Files.getLastModifiedTime(regionFile);
+			RegionState scanned = scanRegion(regionFile, regionX, regionZ);
+			long sizeAfter = Files.size(regionFile);
+			FileTime modifiedAfter = Files.getLastModifiedTime(regionFile);
+			if (sizeBefore == sizeAfter && modifiedBefore.equals(modifiedAfter)) {
+				return new StableRead(scanned.states(), scanned.cacheable(), sizeBefore, modifiedBefore);
+			}
+		}
+		return null;
+	}
+
+	private static long sizeOrMaxValue(Path regionFile) {
+		try {
+			return Files.size(regionFile);
+		} catch (IOException exception) {
+			return Long.MAX_VALUE;
+		}
 	}
 
 	private static RegionState scanRegion(Path file, int regionX, int regionZ) throws IOException {
@@ -313,7 +370,9 @@ public final class RegionScanner {
 		String normalized = status.startsWith("minecraft:") ? status.substring("minecraft:".length()) : status;
 		return switch (normalized) {
 			case "full" -> STATE_FULL;
-			case "features", "initialize_light", "light", "spawn" -> STATE_RENDERABLE;
+			// 1.19.4 chain: ... features, light, spawn, heightmaps, full.
+			// initialize_light only exists in 1.20+, kept for forward safety.
+			case "features", "initialize_light", "light", "spawn", "heightmaps" -> STATE_RENDERABLE;
 			default -> STATE_PARTIAL;
 		};
 	}
@@ -425,6 +484,9 @@ public final class RegionScanner {
 	}
 
 	private record RegionState(byte[] states, boolean cacheable) {
+	}
+
+	private record StableRead(byte[] states, boolean cacheable, long size, FileTime modifiedTime) {
 	}
 
 	private record ChunkStatusResult(String status, boolean external) {

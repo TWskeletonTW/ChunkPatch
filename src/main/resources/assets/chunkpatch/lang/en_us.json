@@ -13,7 +13,6 @@
   "chunkpatch.max_x": "East X",
   "chunkpatch.min_z": "North Z",
   "chunkpatch.max_z": "South Z",
-  "chunkpatch.rate": "Chunks per Tick",
   "chunkpatch.legend": "Green: Xaero-ready  Orange: below FEATURES  Black: missing  Red: invalid  Yellow: selection",
   "chunkpatch.fit_all": "Fit All",
   "chunkpatch.fit_selection": "Fit Selection",
